@@ -30,6 +30,14 @@ pub struct DomInspector {
     windows: HashMap<String, WindowDom>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Observed {
+    /// How many nodes a mutation added or removed.
+    pub changed: u32,
+    /// The event is a full snapshot that decoded.
+    pub full_snapshot: bool,
+}
+
 /// What one walk over serialized nodes found.
 #[derive(Default)]
 struct Walk {
@@ -135,6 +143,38 @@ fn walk_nodes(bytes: &[u8], span: Span, walk: &mut Walk) {
     }
 }
 
+/// What a full snapshot's data holds.
+enum Snapshot {
+    /// Its compressed data does not decode.
+    Undecoded,
+    /// It has no node to walk.
+    Empty,
+    Walked(Walk),
+}
+
+/// Walks the DOM in a full snapshot's data, decoding it first when the event is compressed.
+fn walk_snapshot(inner: &[u8], data: Span, compressed: bool) -> Snapshot {
+    let decoded;
+    let (bytes, root) = if compressed && scan::is_string(inner, data) {
+        let Ok(json) = cv::decode(inner, data) else {
+            return Snapshot::Undecoded;
+        };
+        decoded = json;
+        let Ok(root) = scan::locate_value(&decoded, 0) else {
+            return Snapshot::Undecoded;
+        };
+        (&decoded[..], root)
+    } else {
+        (inner, data)
+    };
+    let Some(node) = field(bytes, root, b"node") else {
+        return Snapshot::Empty;
+    };
+    let mut walk = Walk::default();
+    walk_nodes(bytes, node, &mut walk);
+    Snapshot::Walked(walk)
+}
+
 fn attribute_contains(bytes: &[u8], value: Span, word: &str) -> bool {
     scan::is_string(bytes, value)
         && scan::unescape(bytes, value).is_ok_and(|v| v.to_ascii_lowercase().contains(word))
@@ -185,53 +225,50 @@ impl WindowDom {
 
 impl DomInspector {
     /// Updates the window's DOM with one event and adds what it found to the block.
-    pub fn observe(&mut self, inner: &[u8], event: &Event, window: &str, stats: &mut BlockStats) {
+    pub fn observe(
+        &mut self,
+        inner: &[u8],
+        event: &Event,
+        window: &str,
+        stats: &mut BlockStats,
+    ) -> Observed {
         let dom = self.windows.entry(window.to_owned()).or_default();
+        let mut observed = Observed::default();
         match (event.kind, event.source) {
             (Some(FULL_SNAPSHOT), _) => {
-                let Some(data) = event.data else { return };
-                let decoded;
-                let (bytes, root) = if event.compressed && scan::is_string(inner, data) {
-                    let Ok(json) = cv::decode(inner, data) else {
-                        stats.decode_failures += 1;
-                        return;
-                    };
-                    decoded = json;
-                    let Ok(root) = scan::locate_value(&decoded, 0) else {
-                        stats.decode_failures += 1;
-                        return;
-                    };
-                    (&decoded[..], root)
-                } else {
-                    (inner, data)
-                };
-                let Some(node) = field(bytes, root, b"node") else {
-                    return;
-                };
-                let mut walk = Walk::default();
-                walk_nodes(bytes, node, &mut walk);
-                // A full snapshot replaces the window's DOM.
-                *dom = WindowDom {
-                    has_snapshot: true,
-                    ..WindowDom::default()
-                };
-                dom.insert(&walk.ids);
-                stats.dom_nodes = stats.dom_nodes.max(walk.nodes);
-                stats.dom_text_chars = stats.dom_text_chars.max(walk.text_chars);
-                stats.remote_stylesheets += walk.remote_stylesheets;
-                stats.inline_stylesheets += walk.inline_stylesheets;
-                stats.iframes += walk.iframes;
-                stats.canvases += walk.canvases;
-                stats.videos += walk.videos;
-                stats.shadow_roots += walk.shadow_roots;
+                match event.data.map_or(Snapshot::Empty, |data| {
+                    walk_snapshot(inner, data, event.compressed)
+                }) {
+                    Snapshot::Walked(walk) => {
+                        // A full snapshot replaces the window's DOM.
+                        *dom = WindowDom {
+                            has_snapshot: true,
+                            ..WindowDom::default()
+                        };
+                        dom.insert(&walk.ids);
+                        stats.dom_nodes = stats.dom_nodes.max(walk.nodes);
+                        stats.dom_text_chars = stats.dom_text_chars.max(walk.text_chars);
+                        stats.remote_stylesheets += walk.remote_stylesheets;
+                        stats.inline_stylesheets += walk.inline_stylesheets;
+                        stats.iframes += walk.iframes;
+                        stats.canvases += walk.canvases;
+                        stats.videos += walk.videos;
+                        stats.shadow_roots += walk.shadow_roots;
+                        observed.full_snapshot = true;
+                    }
+                    Snapshot::Undecoded => stats.decode_failures += 1,
+                    Snapshot::Empty => {}
+                }
             }
             (Some(INCREMENTAL_SNAPSHOT), Some(MUTATION))
                 if dom.has_snapshot && !dom.cap_reached =>
             {
                 if let Some(data) = event.data {
-                    let (orphans, failed) = observe_mutation(inner, data, event.compressed, dom);
+                    let (orphans, size, failed) =
+                        observe_mutation(inner, data, event.compressed, dom);
                     stats.orphan_mutations += orphans;
                     stats.decode_failures += u32::from(failed);
+                    observed.changed = size;
                 }
             }
             _ => {}
@@ -240,6 +277,7 @@ impl DomInspector {
             stats.events_before_first_full_snapshot += 1;
         }
         stats.node_cap_reached |= dom.cap_reached;
+        observed
     }
 
     /// Whether any window of the session has a full snapshot in this process.
@@ -275,14 +313,14 @@ fn mutation_lists(inner: &[u8], data: Span, compressed: bool) -> (Vec<List>, boo
     (lists, failed)
 }
 
-/// Applies a mutation to the window's node set. Returns how many of its changes name a node that is not there, and
-/// whether a list did not decode.
+/// Applies a mutation to the window's node set. Returns how many of its changes name a node that is not there, how
+/// many nodes it added or removed, and whether a list did not decode.
 fn observe_mutation(
     inner: &[u8],
     data: Span,
     compressed: bool,
     dom: &mut WindowDom,
-) -> (u32, bool) {
+) -> (u32, u32, bool) {
     let (lists, failed) = mutation_lists(inner, data, compressed);
     // rrweb does not order adds parent first, so a parent added anywhere in the same mutation counts as present.
     let mut added = HashSet::new();
@@ -311,17 +349,20 @@ fn observe_mutation(
                 .count() as u32;
         }
     }
+    let mut removed = 0;
     for (name, bytes) in &lists {
         if *name == b"removes" {
             for item in items(bytes) {
                 if let Some(id) = number(bytes, field(bytes, item, b"id")) {
                     dom.nodes.remove(&(id as i64));
+                    removed += 1;
                 }
             }
         }
     }
+    let size = added.len() as u32 + removed;
     dom.insert(&added.into_iter().collect::<Vec<_>>());
-    (orphans, failed)
+    (orphans, size, failed)
 }
 
 fn items(bytes: &[u8]) -> impl Iterator<Item = Span> + '_ {
