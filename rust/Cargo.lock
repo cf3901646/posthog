@@ -10970,6 +10970,7 @@ dependencies = [
  "envconfig",
  "lifecycle",
  "metrics",
+ "moka",
  "parquet",
  "rand 0.8.5",
  "rdkafka",
@@ -10980,6 +10981,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]
