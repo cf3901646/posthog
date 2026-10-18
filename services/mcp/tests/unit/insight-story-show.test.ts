@@ -4,7 +4,9 @@ import { findStoryRange, lastBucketInProgress } from '@/tools/insights/storyRang
 import { storyShowHandler } from '@/tools/insights/storyShow'
 import { type Context, POSTHOG_FORMATTED_RESULTS_OVERRIDE_KEY } from '@/tools/types'
 
+import type { InsightStoryData } from 'products/product_analytics/mcp/apps/insightStory/insightStoryTypes'
 import { chapterFacts, overviewFacts } from 'products/product_analytics/mcp/apps/insightStory/storyFacts'
+import { buildStoryPages } from 'products/product_analytics/mcp/apps/insightStory/storyPages'
 
 const DAYS = ['2026-10-01', '2026-10-02', '2026-10-03', '2026-10-04', '2026-10-05']
 const HOURS = ['2026-10-01 22:00:00', '2026-10-01 23:00:00', '2026-10-02 00:00:00', '2026-10-02 01:00:00']
@@ -132,6 +134,69 @@ describe('insight-story-show', () => {
         expect(
             overviewFacts(values, { interval: 'minute', lastPointInProgress: false, formatValue: String })
         ).toContain('The range runs from 0 to 6.')
+    })
+
+    it('counts a negative bucket as activity', () => {
+        const facts = overviewFacts([1, -1, -1, 2, 3, -1], {
+            interval: 'day',
+            lastPointInProgress: false,
+            formatValue: String,
+        })
+
+        expect(facts).not.toContain('Only')
+    })
+
+    it('keeps a per-second chart in seconds', () => {
+        const seconds = ['2026-10-01 10:00:00', '2026-10-01 10:00:01', '2026-10-01 10:00:02', '2026-10-01 10:00:03']
+        const facts = chapterFacts([1, 2, 3, 4], seconds, [1, 2], {
+            interval: 'second',
+            lastPointInProgress: false,
+            formatValue: String,
+        })
+
+        expect(facts).toContain('typical second')
+        expect(facts).toContain('10:00:01')
+    })
+
+    it('does not call a stretch empty when only its unfinished last point has activity', () => {
+        const facts = chapterFacts([0, 0, 20], DAYS.slice(0, 3), [0, 2], {
+            interval: 'day',
+            lastPointInProgress: true,
+            formatValue: String,
+        })
+
+        expect(facts).not.toContain('no activity')
+    })
+
+    it.each([
+        ['a start below zero', [-1e20, 0]],
+        ['a fractional index', [0.5, 1]],
+        ['an end past the last point', [1, 3]],
+    ])('shows a chapter with %s as one without a point', (_, range) => {
+        const data = {
+            query: { kind: 'TrendsQuery', interval: 'day', series: [] },
+            results: [{ label: 'signed_up', data: [1, 2, 3], days: DAYS.slice(0, 3) }],
+            seriesIndex: 0,
+            insightName: 'Sign-ups',
+            lastPointInProgress: false,
+            headline: 'A headline.',
+            chapters: [
+                {
+                    title: 'A chapter',
+                    range,
+                    summary: null,
+                    cause: null,
+                    confidence: null,
+                    confidenceReason: null,
+                    evidence: [],
+                },
+            ],
+        } as unknown as InsightStoryData
+
+        const [, chapter] = buildStoryPages(data, String)
+
+        expect(chapter?.range).toBeNull()
+        expect(chapter?.anchor).toBeNull()
     })
 
     it('does not compare a period that has not ended with complete ones', () => {
