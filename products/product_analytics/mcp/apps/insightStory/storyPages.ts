@@ -14,6 +14,14 @@ export interface StoryPage {
 
 export const SUMMARY_TITLE = 'The big picture'
 
+function isPointRange(range: [number, number] | null, length: number): range is [number, number] {
+    if (!range) {
+        return false
+    }
+    const [start, end] = range
+    return Number.isInteger(start) && Number.isInteger(end) && start >= 0 && start <= end && end < length
+}
+
 export function buildStoryPages(data: InsightStoryData, formatValue: StoryFactsOptions['formatValue']): StoryPage[] {
     const series = data.results[data.seriesIndex]
     const values = series?.data ?? []
@@ -31,7 +39,7 @@ export function buildStoryPages(data: InsightStoryData, formatValue: StoryFactsO
         chapter: null,
     }
     const chapters = data.chapters.map((chapter): StoryPage => {
-        const range = chapter.range && chapter.range[1] < values.length ? chapter.range : null
+        const range = isPointRange(chapter.range, values.length) ? chapter.range : null
         return {
             title: chapter.title,
             range,

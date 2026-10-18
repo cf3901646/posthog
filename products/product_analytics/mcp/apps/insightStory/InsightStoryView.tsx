@@ -9,7 +9,10 @@ import { buildStoryPages, type StoryPage } from './storyPages'
 import { StorySteps } from './StorySteps'
 import { StorySummaryView } from './StorySummaryView'
 
-const defaultFormat = new Intl.NumberFormat('en-US', { maximumFractionDigits: 1 }).format
+const wholeFormat = new Intl.NumberFormat('en-US', { maximumFractionDigits: 1 })
+const smallFormat = new Intl.NumberFormat('en-US', { maximumSignificantDigits: 2 })
+const defaultFormat = (value: number): string =>
+    (value !== 0 && Math.abs(value) < 1 ? smallFormat : wholeFormat).format(value)
 
 export interface InsightStoryViewProps {
     data: InsightStoryData

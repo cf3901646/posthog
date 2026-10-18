@@ -43,24 +43,26 @@ function median(values: number[]): number {
 }
 
 function baselineOf(values: number[]): Baseline {
-    const active = values.filter((value) => value > 0)
+    const active = values.filter((value) => value !== 0)
     const sparse = active.length > 0 && values.length - active.length >= values.length * SPARSE_SHARE
     return { typical: median(sparse ? active : values), sparse }
 }
 
 function unitOf(interval: string): string {
-    return interval === 'minute' || interval === 'second' ? 'minute' : interval
+    return interval
 }
 
 // Parsed by hand: `new Date('2026-10-02')` is midnight UTC, which reads as October 1 west of Greenwich.
 export function dateLabel(day: string, interval: string): string {
-    const [, year, month, date, hour, minute] = /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?/.exec(day) ?? []
+    const [, year, month, date, hour, minute, second] =
+        /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?/.exec(day) ?? []
     if (!year || !month || !date) {
         return day
     }
     const monthName = MONTHS[Number(month) - 1] ?? month
     switch (interval) {
         case 'second':
+            return `${monthName.slice(0, 3)} ${Number(date)}, ${hour ?? '00'}:${minute ?? '00'}:${second ?? '00'}`
         case 'minute':
         case 'hour':
             return `${monthName.slice(0, 3)} ${Number(date)}, ${hour ?? '00'}:${minute ?? '00'}`
@@ -139,7 +141,7 @@ export function overviewFacts(data: number[], options: StoryFactsOptions): strin
     const base = baselineOf(values)
     const sentences: string[] = []
     if (base.sparse) {
-        const active = values.filter((value) => value > 0).length
+        const active = values.filter((value) => value !== 0).length
         sentences.push(
             `Only ${mark('value', `${active} of ${values.length} ${unit}s`)} have any activity. A typical active ${unit} is ${mark('value', formatValue(level(base.typical)))}.`
         )
@@ -197,7 +199,7 @@ function stretchFacts(data: number[], days: string[], range: [number, number], o
     if (!values.length) {
         return pointFacts(data, days, end, options)
     }
-    if (values.every((value) => value === 0)) {
+    if (data.slice(start, end + 1).every((value) => value === 0)) {
         return `From ${from} to ${to} there is no activity at all.${ongoing}`
     }
     const typical = median(values)
