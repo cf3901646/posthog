@@ -20,7 +20,11 @@ from boto3.session import Session
 from botocore.response import StreamingBody
 from botocore.stub import Stubber
 from click.testing import CliRunner
-from hogli_commands.devbox import eval_env
+from hogli_commands.devbox import (
+    cli as devbox_cli,
+    coder as devbox_coder,
+    eval_env,
+)
 
 from products.posthog_ai.eval_harness.environment import download
 
@@ -155,7 +159,9 @@ def test_bundle_relay_restores_only_after_verification(
     failed = cache_status == 1 or receive_status != 0 or restore_status != 0
     assert result.exit_code == (1 if failed else 0), result.output
     assert transferred == ([payload] if cache_status == 3 else [])
-    start.assert_called_once_with("eval1", None, eval_env.DEFAULT_TEMPLATE, eval_env.DEFAULT_PRESET, None, False, False)
+    start.assert_called_once_with(
+        "eval1", None, eval_env.DEFAULT_TEMPLATE, eval_env.DEFAULT_PRESET, None, None, False, default_start_app=False
+    )
     restore = [
         command for command in calls if command[:3] == ["-m", "products.posthog_ai.eval_harness.environment", "prepare"]
     ]
@@ -196,6 +202,51 @@ def test_bundle_relay_restores_only_after_verification(
         download.boto3.Session.assert_called_once_with(profile_name="example-reader")
     else:
         download.boto3.Session.assert_not_called()
+
+
+@pytest.mark.parametrize("status", ["new", "running", "stopped"])
+def test_prepare_creates_or_reuses_workspace_without_changing_start_app(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: str
+) -> None:
+    bundle = tmp_path / "environment.tar.gz"
+    bundle.write_bytes(b"invented environment bundle")
+    build: dict[str, object] = {
+        "status": status,
+        "resources": [{"agents": [{"apps": [{"slug": "app", "health": "healthy"}]}]}],
+    }
+    workspace = {"name": "devbox-engineer-eval1", "owner_name": "engineer", "latest_build": build}
+
+    def start_workspace(*args: object, **kwargs: object) -> None:
+        build["status"] = "running"
+
+    create = MagicMock(side_effect=start_workspace)
+    start = MagicMock(side_effect=start_workspace)
+    monkeypatch.setattr(devbox_cli, "ensure_runtime_ready", lambda: None)
+    monkeypatch.setattr(devbox_cli, "load_config", lambda: {})
+    monkeypatch.setattr(devbox_cli, "list_user_workspaces", lambda: [] if status == "new" else [workspace])
+    monkeypatch.setattr(devbox_coder, "get_username", lambda: "engineer")
+    monkeypatch.setattr(devbox_cli, "create_workspace", create)
+    monkeypatch.setattr(devbox_cli, "start_workspace", start)
+    monkeypatch.setattr(devbox_cli, "wait_for_agent_ready", lambda name: "ready")
+    monkeypatch.setattr(devbox_cli.mutagen, "sync_list", lambda **kwargs: [])
+    monkeypatch.setattr(eval_env, "coder_ssh_alias_configured", lambda name: True)
+    monkeypatch.setattr(eval_env, "get_workspace", lambda name: workspace)
+    monkeypatch.setattr(eval_env, "get_coder_url", lambda: "https://coder.example.com")
+    monkeypatch.setattr(eval_env.subprocess, "run", MagicMock(return_value=subprocess.CompletedProcess([], 0)))
+
+    result = CliRunner().invoke(eval_env.cmd_prepare_eval_env, ["-n", "eval1", "--bundle", str(bundle)])
+
+    assert result.exit_code == 0, result.output
+    assert "Eval environment ready" in result.output
+    if status == "new":
+        assert create.call_count == 1
+        assert create.call_args.kwargs["start_app"] is False
+    else:
+        create.assert_not_called()
+    if status == "stopped":
+        start.assert_called_once_with("devbox-engineer-eval1", verbose=False)
+    else:
+        start.assert_not_called()
 
 
 @pytest.mark.parametrize("failure", ["access", "checksum", "truncated"])

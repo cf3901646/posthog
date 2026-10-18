@@ -5,9 +5,7 @@ from uuid import UUID
 
 from pydantic import JsonValue
 
-from posthog.cdp.filters import compile_filters_bytecode
-from posthog.cdp.validation import compile_hog
-
+from products.cdp.backend.facade.api import compile_filters_bytecode, compile_hog
 from products.cdp.backend.facade.models import HogFunction, HogFunctionType
 from products.posthog_ai.eval_harness.environment.guard import assert_local_databases
 from products.posthog_ai.eval_harness.environment.schema import EnvironmentModel
@@ -58,7 +56,7 @@ class EnvironmentIngestion(EnvironmentModel):
         if (
             function is None
             or self.bytecode != compile_hog(self.hog, HogFunctionType.TRANSFORMATION)
-            or self.filters != compile_filters_bytecode({}, team)
+            or self.filters != compile_filters_bytecode({}, team_id=team.id)
             or any(getattr(function, field) != value for field, value in expected.items())
             or function.inputs != {}
             or function.inputs_schema != []

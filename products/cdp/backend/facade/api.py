@@ -1,27 +1,43 @@
 """
 Facade for cdp.
 
-Re-exports the HogFunction serializer cross-product API views reuse. Lazy (PEP 562) to
-keep the DRF/serializer import chain off config-only import paths.
+Re-exports the HogFunction serializer and compilers cross-product callers reuse.
+Lazy (PEP 562) to keep the DRF/serializer import chain off config-only import paths.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from posthog.cdp.flag_gated_templates import FLAG_GATED_TEMPLATE_IDS, gated_template_enabled
 from posthog.models.team import Team
 from posthog.models.user import User
 
+from products.cdp.backend.flag_gated_templates import FLAG_GATED_TEMPLATE_IDS, gated_template_enabled
 from products.cdp.backend.models.hog_function_template import HogFunctionTemplate
+
+if TYPE_CHECKING:
+    from pydantic import JsonValue
 
 _B = "products.cdp.backend."
 
-_LAZY = {"HogFunctionSerializer": "api.hog_function"}
+_LAZY = {
+    "HogFunctionSerializer": "api.hog_function",
+    "compile_hog": "validation",
+}
 
-__all__ = [*sorted(_LAZY), "create_hog_functions", "is_hog_function_template_available"]
+__all__ = [*sorted(_LAZY), "compile_filters_bytecode", "create_hog_functions", "is_hog_function_template_available"]
+
+
+def compile_filters_bytecode(filters: dict[str, JsonValue], *, team_id: int) -> dict[str, JsonValue]:
+    """Compile JSON filters, resolving any referenced actions inside the product."""
+    from products.cdp.backend.filters import (
+        compile_filters_bytecode as _compile_filters_bytecode,  # noqa: PLC0415 — keeps HogQL off config-only import paths
+    )
+
+    compiled: dict[str, JsonValue] = _compile_filters_bytecode(filters, Team.objects.get(id=team_id))
+    return compiled
 
 
 def is_hog_function_template_available(template_id: str, team: Team) -> bool:
