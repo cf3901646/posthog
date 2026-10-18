@@ -334,6 +334,8 @@ export class PushNotificationService {
         let otherErrorCount = 0
         const errors: PushSendError[] = []
         let firstError: string | undefined
+        // Logged after the loop, because a skip is only worth a warning when no other channel delivered.
+        const skipMessages: string[] = []
         // Which providers took delivery. Only its emptiness is read, to decide whether there is a
         // delivered notification worth capturing.
         const deliveredPlatforms = new Set<string>()
@@ -348,9 +350,16 @@ export class PushNotificationService {
 
                 let sent: boolean
                 if (integration.kind === 'firebase') {
-                    sent = await this.executeFcm(result, params, integration, invocation)
+                    sent = await this.executeFcm(result, params, integration, invocation, skipMessages)
                 } else if (integration.kind === 'apns') {
-                    sent = await this.executeApns(result, params, integration, invocation, apnsAcceptedKeys)
+                    sent = await this.executeApns(
+                        result,
+                        params,
+                        integration,
+                        invocation,
+                        apnsAcceptedKeys,
+                        skipMessages
+                    )
                 } else {
                     throw new Error(`Unsupported push integration kind: ${integration.kind}`)
                 }
@@ -374,6 +383,12 @@ export class PushNotificationService {
                     addLog('error', error.message)
                 }
             }
+        }
+
+        // Most recipients have a device on one platform only, so a skip next to a delivery is expected.
+        const skipLogLevel = successCount > 0 ? 'info' : 'warn'
+        for (const message of skipMessages) {
+            addLog(skipLogLevel, message)
         }
 
         const errorCount = errors.length + otherErrorCount
@@ -462,7 +477,14 @@ export class PushNotificationService {
             result.error = firstError
         }
         // Surface the error to the hog template too, otherwise its failure message renders blank.
-        result.invocation.state.vmState!.stack.push({ success, error: success ? null : (firstError ?? null) })
+        // The channel counts let a workflow store the outcome in an output variable and branch on it.
+        result.invocation.state.vmState!.stack.push({
+            success,
+            error: success ? null : (firstError ?? null),
+            delivered: successCount,
+            skipped: skippedCount,
+            failed: errorCount,
+        })
 
         return result
     }
@@ -472,7 +494,8 @@ export class PushNotificationService {
         result: CyclotronJobInvocationResult<CyclotronJobInvocationHogFunction>,
         params: CyclotronInvocationQueueParametersSendPushNotificationType,
         integration: IntegrationType,
-        invocation: CyclotronJobInvocationHogFunction
+        invocation: CyclotronJobInvocationHogFunction,
+        skipMessages: string[]
     ): Promise<boolean> {
         const addLog = createAddLogFunction(result.logs)
 
@@ -486,7 +509,7 @@ export class PushNotificationService {
         const subscriptions = getDevicePushSubscriptions(personProperties, projectId, this.encryptedFields)
 
         if (subscriptions.length === 0) {
-            addLog('warn', `No active FCM device token found for distinct_id: ${params.distinctId}`)
+            skipMessages.push(`No active FCM device token found for distinct_id: ${params.distinctId}`)
             pushNotificationSkippedCounter.labels({ platform: 'fcm', reason: 'no_token' }).inc()
             return false
         }
@@ -604,7 +627,8 @@ export class PushNotificationService {
         params: CyclotronInvocationQueueParametersSendPushNotificationType,
         integration: IntegrationType,
         invocation: CyclotronJobInvocationHogFunction,
-        apnsAcceptedKeys: Set<string>
+        apnsAcceptedKeys: Set<string>,
+        skipMessages: string[]
     ): Promise<boolean> {
         const addLog = createAddLogFunction(result.logs)
 
@@ -620,7 +644,7 @@ export class PushNotificationService {
         const subscriptions = getDevicePushSubscriptions(personProperties, bundleId, this.encryptedFields)
 
         if (subscriptions.length === 0) {
-            addLog('warn', `No active APNS device token found for distinct_id: ${params.distinctId}`)
+            skipMessages.push(`No active APNS device token found for distinct_id: ${params.distinctId}`)
             pushNotificationSkippedCounter.labels({ platform: 'apns', reason: 'no_token' }).inc()
             return false
         }
