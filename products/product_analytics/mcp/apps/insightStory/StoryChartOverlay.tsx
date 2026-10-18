@@ -8,7 +8,8 @@ import type { StoryPage } from './storyPages'
 // The brand orange in both themes, so the highlight never reads as one of the chart's series.
 const HIGHLIGHT_COLOR = 'var(--primary-light)'
 const MARKER_SIZE = 20
-const MARKER_GAP = 10
+const MARKER_GAP = 12
+const TAIL_WIDTH = 8
 const FEATHER = 28
 const MIN_REACH = 22
 const BAR_PADDING = 4
@@ -81,7 +82,6 @@ export function StoryChartOverlay({
         : []
 
     const yScale = (chartSeries.yAxisId && scales.yAxes?.[chartSeries.yAxisId]?.scale) || scales.y
-    const placed: { x: number; top: number }[] = []
     const markers = pages.flatMap((page, index) => {
         const x = page.anchor === null ? null : xAt(page.anchor)
         if (page.anchor === null || x === null || x < plotLeft || x > plotRight) {
@@ -93,14 +93,23 @@ export function StoryChartOverlay({
         }
         // A point at the top of the plot has no room above it, so its marker goes below.
         const above = y - MARKER_SIZE - MARKER_GAP
-        let top = above >= plotTop ? above : y + MARKER_GAP
-        // Two chapters on neighbouring points would put one marker on top of the other.
-        while (placed.some((other) => Math.abs(other.x - x) < MARKER_SIZE && Math.abs(other.top - top) < MARKER_SIZE)) {
-            top += MARKER_SIZE + 2
-        }
-        placed.push({ x, top })
-        return [{ page, index, x, y, top }]
+        const below = above < plotTop
+        return [{ page, index, x, y, top: below ? y + MARKER_GAP : above, left: x, below }]
     })
+    // Badges on neighbouring points move apart sideways, so each stays over its own point.
+    for (const marker of markers) {
+        for (const other of markers) {
+            if (other === marker || Math.abs(other.top - marker.top) >= MARKER_SIZE) {
+                continue
+            }
+            const overlap = MARKER_SIZE + 2 - Math.abs(other.left - marker.left)
+            if (overlap > 0) {
+                const direction = marker.x >= other.x ? 1 : -1
+                marker.left += (direction * overlap) / 2
+                other.left -= (direction * overlap) / 2
+            }
+        }
+    }
 
     return (
         <div data-attr="insight-story-overlay">
@@ -135,46 +144,53 @@ export function StoryChartOverlay({
                     }}
                 />
             )}
-            {markers.map(({ page, index, x, y, top }) => {
+            <svg
+                className="pointer-events-none absolute overflow-visible"
+                style={{ left: plotLeft, top: plotTop, width: plotWidth, height: plotHeight }}
+                aria-hidden
+            >
+                {markers.map(({ index, x, y, top, left, below }) => {
+                    const base = below ? top + 1 : top + MARKER_SIZE - 1
+                    const tip = below ? y + 3 : y - 3
+                    const points: [number, number][] = [
+                        [left - TAIL_WIDTH / 2, base],
+                        [left + TAIL_WIDTH / 2, base],
+                        [x, tip],
+                    ]
+                    return (
+                        <polygon
+                            key={index}
+                            points={points.map(([px, py]) => `${px - plotLeft},${py - plotTop}`).join(' ')}
+                            fill={index === activeIndex ? 'var(--foreground)' : 'var(--muted-foreground)'}
+                        />
+                    )
+                })}
+            </svg>
+            {markers.map(({ page, index, top, left }) => {
                 const active = index === activeIndex
                 return (
-                    <div key={index}>
-                        {active && (
-                            <div
-                                className="pointer-events-none absolute rounded-full border-2"
-                                style={{
-                                    left: x - 6,
-                                    top: y - 6,
-                                    width: 12,
-                                    height: 12,
-                                    background: surface,
-                                    borderColor: chartSeries.color,
-                                    boxShadow: `0 0 0 4px ${tint(30)}`,
-                                }}
-                            />
-                        )}
-                        <button
-                            type="button"
-                            data-hog-charts-interactive-overlay
-                            data-attr="insight-story-marker"
-                            aria-label={`Chapter ${index + 1}: ${page.title}`}
-                            aria-current={active ? 'step' : undefined}
-                            className={`pointer-events-auto absolute flex cursor-pointer items-center justify-center rounded-full border text-xs font-medium tabular-nums transition-colors focus-visible:outline-2 focus-visible:outline-ring ${
-                                active
-                                    ? 'border-foreground bg-foreground text-background'
-                                    : 'border-border bg-card text-foreground hover:border-foreground'
-                            }`}
-                            style={{ left: x - MARKER_SIZE / 2, top, width: MARKER_SIZE, height: MARKER_SIZE }}
-                            onClick={(event) => {
-                                event.stopPropagation()
-                                onSelect(index)
-                            }}
-                            onMouseDown={stopPropagation}
-                            onMouseMove={stopPropagation}
-                        >
-                            {index + 1}
-                        </button>
-                    </div>
+                    <button
+                        key={index}
+                        type="button"
+                        data-hog-charts-interactive-overlay
+                        data-attr="insight-story-marker"
+                        aria-label={`Chapter ${index + 1}: ${page.title}`}
+                        aria-current={active ? 'step' : undefined}
+                        className={`pointer-events-auto absolute flex cursor-pointer items-center justify-center rounded-full border text-xs font-medium tabular-nums transition-colors focus-visible:outline-2 focus-visible:outline-ring ${
+                            active
+                                ? 'border-foreground bg-foreground text-background'
+                                : 'border-muted-foreground bg-card text-foreground shadow-sm hover:border-foreground'
+                        }`}
+                        style={{ left: left - MARKER_SIZE / 2, top, width: MARKER_SIZE, height: MARKER_SIZE }}
+                        onClick={(event) => {
+                            event.stopPropagation()
+                            onSelect(index)
+                        }}
+                        onMouseDown={stopPropagation}
+                        onMouseMove={stopPropagation}
+                    >
+                        {index + 1}
+                    </button>
                 )
             })}
         </div>
