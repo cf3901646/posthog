@@ -31,6 +31,7 @@ pub struct Tp {
 /// An admitted message, not decoded yet.
 pub struct Raw {
     pub offset: i64,
+    pub captured_at_ms: Option<i64>,
     pub payload: Vec<u8>,
     pub content_encoding: Option<String>,
 }
@@ -90,6 +91,8 @@ pub struct Block {
     pub moments: Vec<Moment>,
     /// Remote image URLs the block's DOM referenced.
     pub image_urls: Vec<String>,
+    /// The earliest Kafka timestamp of the block's messages, for the capture watermark of the index topic.
+    pub captured_at_ms: Option<i64>,
 }
 
 /// The decoded `cv` strings one flush keeps, on top of the decoded payloads that the flush size counts.
@@ -394,6 +397,7 @@ fn inspect_session(
 ) -> (SessionKey, SessionInspector, Vec<Tp>, Vec<Block>) {
     let mut decoded = Vec::with_capacity(parts.len());
     for (origin, raws) in parts {
+        let captured_at_ms = raws.iter().filter_map(|raw| raw.captured_at_ms).min();
         let mut messages = Vec::with_capacity(raws.len());
         for raw in raws {
             let message = read(raw.payload, raw.content_encoding.as_deref())
@@ -420,7 +424,7 @@ fn inspect_session(
         }
         counter!("ai_research_v4_recorder_messages_total", "outcome" => "recorded")
             .increment(messages.len() as u64);
-        decoded.push((origin, messages));
+        decoded.push((origin, messages, captured_at_ms));
     }
     // A session can have messages on the main and the overflow topic in one flush. The inspector takes them in replay
     // order, so that a mutation never comes before the nodes it changes. Each still counts toward its partition's block.
@@ -428,7 +432,7 @@ fn inspect_session(
         decoded.iter().map(|_| BlockInspection::default()).collect();
     let times: Vec<Vec<f64>> = decoded
         .iter()
-        .map(|(_, messages)| messages.iter().map(replay_time).collect())
+        .map(|(_, messages, _)| messages.iter().map(replay_time).collect())
         .collect();
     let mut next = vec![0; decoded.len()];
     while let Some(part) = (0..decoded.len())
@@ -441,7 +445,7 @@ fn inspect_session(
     let blocks = decoded
         .into_iter()
         .zip(inspections)
-        .map(|((origin, messages), block)| {
+        .map(|((origin, messages, captured_at_ms), block)| {
             let inspected = block.finish();
             Block {
                 session: session.clone(),
@@ -450,6 +454,7 @@ fn inspect_session(
                 stats: inspected.stats,
                 moments: inspected.moments,
                 image_urls: inspected.image_urls,
+                captured_at_ms,
             }
         })
         .collect();
@@ -524,6 +529,7 @@ mod tests {
         let inner = json!({"event": "$snapshot_items", "properties": {"$session_id": session, "$window_id": "w", "$snapshot_source": "web", "$snapshot_items": items}});
         Raw {
             offset,
+            captured_at_ms: None,
             payload: json!({"distinct_id": "d", "data": inner.to_string()})
                 .to_string()
                 .into_bytes(),
@@ -742,6 +748,7 @@ mod tests {
     async fn a_session_that_decodes_nothing_keeps_its_state_as_it_was() {
         let unreadable = |offset: i64| Raw {
             offset,
+            captured_at_ms: None,
             payload: b"not json".to_vec(),
             content_encoding: None,
         };
