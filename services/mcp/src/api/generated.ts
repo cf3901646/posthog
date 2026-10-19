@@ -129892,18 +129892,6 @@ export namespace Schemas {
       Json: 'json',
     } as const;
 
-    export type PersonsPropertiesTimelineRetrieveParams = {
-    format?: PersonsPropertiesTimelineRetrieveFormat;
-    };
-
-    export type PersonsPropertiesTimelineRetrieveFormat = typeof PersonsPropertiesTimelineRetrieveFormat[keyof typeof PersonsPropertiesTimelineRetrieveFormat];
-
-
-    export const PersonsPropertiesTimelineRetrieveFormat = {
-      Csv: 'csv',
-      Json: 'json',
-    } as const;
-
     export type PersonsPropertiesTimelineCreateParams = {
     format?: PersonsPropertiesTimelineCreateFormat;
     };
