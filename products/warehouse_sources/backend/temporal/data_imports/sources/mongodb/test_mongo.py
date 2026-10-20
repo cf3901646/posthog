@@ -1170,9 +1170,13 @@ class TestMongoSourceResume(SimpleTestCase):
         [
             ("ascending_index", {"_id_": {"key": [("_id", 1)]}}, True),
             ("descending_index", {"_id_-1": {"key": [("_id", -1)]}}, True),
-            # A hashed index serves neither the range predicate nor the sort, so it is no index here.
             ("hashed_index", {"_id_hashed": {"key": [("_id", "hashed")]}}, False),
-            ("other_field_indexed", {"other_1": {"key": [("other", 1)]}}, False),
+            (
+                "partial_index",
+                {"_id_1": {"key": [("_id", 1)], "partialFilterExpression": {"active": True}}},
+                False,
+            ),
+            ("compound_index_on_another_field_first", {"other_1__id_1": {"key": [("other", 1), ("_id", 1)]}}, False),
             ("not_indexed", {}, False),
         ]
     )

@@ -683,6 +683,17 @@ def _estimate_rows_to_sync(collection: Collection, query: dict[str, Any], logger
     return 0
 
 
+def _serves_range_and_sort(spec: dict[str, Any], incremental_field: str) -> bool:
+    """Whether the planner can serve `field > x` ordered by `field` from this index.
+
+    A hashed, text or geo index serves neither the range nor the sort, and a partial index serves
+    them only for a query that implies its filter, which the cap query does not. The field has to
+    come first: a compound index that only holds it later cannot order by it on its own.
+    """
+    field, direction = spec["key"][0]
+    return field == incremental_field and direction in (ASCENDING, DESCENDING) and "partialFilterExpression" not in spec
+
+
 def _read_upper_bound(
     collection: Collection, query: dict[str, Any], incremental_field: str, logger: FilteringBoundLogger
 ) -> Any | None:
@@ -694,14 +705,12 @@ def _read_upper_bound(
     watermark, so the next run reads it.
     """
     try:
-        # A hashed, text or geo index on the field serves neither the range predicate nor the sort,
-        # so only an ascending or descending one keeps the lookup off a second collection scan.
         indexed = any(
-            field == incremental_field and direction in (ASCENDING, DESCENDING)
-            for field, direction in (spec["key"][0] for spec in collection.index_information().values())
+            _serves_range_and_sort(spec, incremental_field) for spec in collection.index_information().values()
         )
         if not indexed:
-            logger.debug(f"MongoDB: no ordered index starts with {incremental_field}, so the read is not capped")
+            # Without a usable index the lookup scans the whole collection a second time.
+            logger.debug(f"MongoDB: no usable index on {incremental_field}, so the read is not capped")
             return None
         newest = collection.find_one(
             query,
