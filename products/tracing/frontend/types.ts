@@ -43,3 +43,6 @@ export const STATUS_CODE_LABELS: Record<number, { label: string; type: 'success'
 // The trace drawer's inspector tabs. Query, Errors, Operations and Metrics are conditional, so the
 // active tab can point at a tab the drawer is not currently rendering.
 export type SpanInspectorTab = 'attributes' | 'query' | 'logs' | 'errors' | 'operations' | 'metrics' | 'raw'
+
+/** Which view the trace drawer's left pane shows. */
+export type TraceViewMode = 'waterfall' | 'calltree'

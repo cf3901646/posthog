@@ -58,6 +58,8 @@ describe('TraceDrawer', () => {
                     onSelectSpan={jest.fn()}
                     highlightedOperationKey={null}
                     onHighlightOperation={jest.fn()}
+                    traceViewMode="waterfall"
+                    onSetTraceViewMode={jest.fn()}
                     onClose={jest.fn()}
                     {...props}
                 />
@@ -134,6 +136,43 @@ describe('TraceDrawer', () => {
             expect(mockAiEventsRetrieve).toHaveBeenCalledTimes(aiEventsFetches)
         }
     )
+
+    // The view toggle swaps one view for the other. A regression that renders both views, or neither, fails here.
+    // The call tree draws the two cache GET spans under POST /orders as one bar, and a bar that hides its count brings
+    // back the row counting the call tree exists to remove. The third cache GET runs under SELECT orders, so it gets
+    // a bar of its own. A tree that merges an operation across its callers labels both bars cache GET ×3.
+    it.each([
+        { traceViewMode: 'waterfall' as const, showsWaterfall: true },
+        { traceViewMode: 'calltree' as const, showsWaterfall: false },
+    ])('shows only the $traceViewMode view', ({ traceViewMode, showsWaterfall }) => {
+        renderDrawer({
+            traceViewMode,
+            spans: [
+                makeSpan({ trace_id: 'abc123', span_id: 'span-1', name: 'POST /orders', is_root_span: true }),
+                makeSpan({
+                    trace_id: 'abc123',
+                    span_id: 'span-2',
+                    parent_span_id: 'span-1',
+                    name: 'SELECT orders',
+                    service_name: 'postgres',
+                    is_root_span: false,
+                }),
+                ...[
+                    { span_id: 'span-3', parent_span_id: 'span-1' },
+                    { span_id: 'span-4', parent_span_id: 'span-1' },
+                    { span_id: 'span-5', parent_span_id: 'span-2' },
+                ].map(({ span_id, parent_span_id }) =>
+                    makeSpan({ trace_id: 'abc123', span_id, parent_span_id, name: 'cache GET', is_root_span: false })
+                ),
+            ],
+        })
+
+        expect(screen.queryByText('Span') !== null).toBe(showsWaterfall)
+        expect(screen.queryByRole('button', { name: 'POST /orders' }) !== null).toBe(!showsWaterfall)
+        expect(screen.queryByRole('button', { name: 'cache GET ×2' }) !== null).toBe(!showsWaterfall)
+        expect(screen.queryByRole('button', { name: 'cache GET' }) !== null).toBe(!showsWaterfall)
+        expect(screen.queryByText('cache GET ×3')).toBeNull()
+    })
 
     // The spans fetch and the AI events fetch resolve independently, so a spans result that is empty
     // must not read as "trace unavailable" while AI events for the same trace are still in flight.

@@ -50,7 +50,7 @@ import type {
     TracingViewMode,
 } from './tracingFiltersLogic'
 import { tracingViewerLogic } from './tracingViewerLogic'
-import type { Span, SpanInspectorTab } from './types'
+import type { Span, SpanInspectorTab, TraceViewMode } from './types'
 
 /** What each result row represents: a trace (its root span), an individual span, or an operation aggregate. */
 export type TracingDisplayMode = TracingViewMode | 'operations'
@@ -128,6 +128,7 @@ export interface tracingSceneLogicValues {
     sessionErrorBadgesEnabled: boolean // tracingViewerLogic
     traceIdentity: TraceIdentity // tracingViewerLogic
     traceSessionId: string | null // tracingViewerLogic
+    traceViewMode: TraceViewMode // tracingViewerLogic
     activeSceneTab: TracingSceneTab
     activeTracingTab: 'operations' | 'traces'
     breadcrumbs: Breadcrumb[]
@@ -274,6 +275,9 @@ export interface tracingSceneLogicActions {
     selectSpan: (spanId: string | null) => {
         spanId: string | null
     } // tracingViewerLogic
+    setTraceViewMode: (mode: TraceViewMode) => {
+        mode: TraceViewMode
+    } // tracingViewerLogic
     keepSqlEditorMounted: (editorTabId: string) => {
         editorTabId: string
     }
@@ -377,6 +381,7 @@ export const tracingSceneLogic = kea<tracingSceneLogicType>([
                 'compareFlameServiceName',
                 'selectedTraceLoadFailed',
                 'highlightedOperationKey',
+                'traceViewMode',
             ],
         ],
         actions: [
@@ -415,6 +420,7 @@ export const tracingSceneLogic = kea<tracingSceneLogicType>([
                 'openCompareFlame',
                 'closeCompareFlame',
                 'highlightOperation',
+                'setTraceViewMode',
             ],
             featureFlagLogic,
             ['setFeatureFlags'],

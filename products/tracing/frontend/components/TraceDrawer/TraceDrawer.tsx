@@ -1,7 +1,7 @@
 import { useActions, useValues } from 'kea'
 import { useEffect, useMemo, useRef } from 'react'
 
-import { LemonBanner, LemonButton, LemonTag, SpinnerOverlay } from '@posthog/lemon-ui'
+import { LemonBanner, LemonButton, LemonSegmentedButton, LemonTag, SpinnerOverlay } from '@posthog/lemon-ui'
 
 import { Resizer } from 'lib/components/Resizer/Resizer'
 import { type ResizerLogicProps, resizerLogic } from 'lib/components/Resizer/resizerLogic'
@@ -11,18 +11,22 @@ import { copyToClipboard } from 'lib/utils/copyToClipboard'
 import { cn } from 'lib/utils/css-classes'
 
 import { buildAiEventSpans } from '../../aiEventSpans'
+import { compareRowKey } from '../../compareUtils'
 import type { ErrorScope } from '../../errorCorrelation'
 import { useKeepMountedWhileOpen } from '../../hooks/useKeepMountedWhileOpen'
+import { buildTraceCallTree } from '../../traceCallTree'
+import { TraceCompareFlame } from '../../TraceCompareFlame'
 import type { TraceIdentity } from '../../traceIdentity'
 import { absoluteTraceUrl } from '../../traceLinks'
 import { buildServiceColorMap, formatDuration, TraceWaterfallView } from '../../TraceWaterfallView'
-import type { Span, SpanInspectorTab } from '../../types'
+import type { Span, SpanInspectorTab, TraceViewMode } from '../../types'
 import { SpanInspector } from '../SpanInspector/SpanInspector'
 import { MissingParentSpanNotice } from './MissingParentSpanNotice'
 import { TraceAiEventsCapNotice } from './TraceAiEventsCapNotice'
 import { traceAiEventsLogic } from './traceAiEventsLogic'
 import { TraceIdentityChips } from './TraceIdentityChips'
 import { TraceLoadErrorNotice } from './TraceLoadErrorNotice'
+import { TraceLoadMoreFooter } from './TraceLoadMoreFooter'
 import { TraceUnavailableNotice } from './TraceUnavailableNotice'
 
 // Below this the inspector's content (the attribute KVP tables) stops being readable; clamp so a
@@ -63,6 +67,9 @@ export interface TraceDrawerProps {
     /** The operation whose spans the waterfall highlights (compareRowKey), held in tracingViewerLogic. */
     highlightedOperationKey: string | null
     onHighlightOperation: (operationKey: string | null) => void
+    /** The left pane shows the waterfall or the call tree. Held in tracingViewerLogic so the choice sticks across traces. */
+    traceViewMode: TraceViewMode
+    onSetTraceViewMode: (mode: TraceViewMode) => void
     onClose: () => void
 }
 
@@ -92,6 +99,8 @@ export function TraceDrawer({
     onSelectSpan,
     highlightedOperationKey,
     onHighlightOperation,
+    traceViewMode,
+    onSetTraceViewMode,
     onClose,
 }: TraceDrawerProps): JSX.Element | null {
     const { aiEvents, hasMoreAiEvents, aiEventsLimit, aiEventsResponseLoading, aiEventsLoadFailed } = useValues(
@@ -123,6 +132,20 @@ export function TraceDrawer({
                 ? { spans: realSpans, highlightedOperationKey, onHighlightOperation, partial: hasMoreSpans }
                 : undefined,
         [realSpans, highlightedOperationKey, onHighlightOperation, hasMoreSpans]
+    )
+    // Real spans for the same reason. Built only in call tree mode, so the waterfall does not pay for it.
+    const callTree = useMemo(
+        () => (traceViewMode === 'calltree' ? buildTraceCallTree(realSpans) : null),
+        [traceViewMode, realSpans]
+    )
+    // The flame focuses the highlighted operation. It matches on the name only, so it can focus a
+    // same-named operation of another service.
+    const highlightedOperationName = useMemo(
+        () =>
+            highlightedOperationKey
+                ? (realSpans.find((span) => compareRowKey(span) === highlightedOperationKey)?.name ?? null)
+                : null,
+        [realSpans, highlightedOperationKey]
     )
     // Waterfall|inspector split. Persisted so a user's preferred split sticks across traces;
     // desiredSize is null until the first drag, leaving the responsive default (w-2/5) in place.
@@ -219,17 +242,61 @@ export function TraceDrawer({
                             </LemonBanner>
                         )}
                         <TraceAiEventsCapNotice aiEvents={aiEvents} hasMore={hasMoreAiEvents} limit={aiEventsLimit} />
-                        {/* Keyed by trace so a new trace resets selection + scroll state. */}
-                        <TraceWaterfallView
-                            key={traceId ?? ''}
-                            spans={spans}
-                            selectedSpanId={selectedSpanId}
-                            onSpanSelect={onSelectSpan}
-                            highlightedOperationKey={highlightedOperationKey}
-                            hasMore={hasMoreSpans}
-                            loadingMore={loadingMoreSpans}
-                            onLoadMore={onLoadMoreSpans}
-                        />
+                        <div className="flex justify-end mb-2">
+                            <LemonSegmentedButton
+                                size="xsmall"
+                                value={traceViewMode}
+                                onChange={(mode) => {
+                                    // A click on the selected option also calls onChange, and each call captures a view change event.
+                                    if (mode !== traceViewMode) {
+                                        onSetTraceViewMode(mode)
+                                    }
+                                }}
+                                // pinned: autocapture selects on these values, so renaming them breaks saved actions.
+                                // LemonSegmentedButton puts no data-attr on its root, so each option carries one.
+                                options={[
+                                    {
+                                        value: 'waterfall',
+                                        label: 'Waterfall',
+                                        'data-attr': 'tracing-trace-view-waterfall',
+                                    },
+                                    {
+                                        value: 'calltree',
+                                        label: 'Call tree',
+                                        'data-attr': 'tracing-trace-view-calltree',
+                                    },
+                                ]}
+                            />
+                        </div>
+                        {traceViewMode === 'calltree' ? (
+                            <>
+                                <TraceCompareFlame
+                                    tree={callTree ?? undefined}
+                                    current={[]}
+                                    previous={null}
+                                    loading={false}
+                                    sizeBy="total"
+                                    initialSpanName={highlightedOperationName}
+                                    serviceColorMap={serviceColorMap}
+                                />
+                                {/* The call tree has no scroll trigger, so this button is the only way to load the rest of a large trace. */}
+                                {hasMoreSpans && (
+                                    <TraceLoadMoreFooter loadingMore={loadingMoreSpans} onLoadMore={onLoadMoreSpans} />
+                                )}
+                            </>
+                        ) : (
+                            // Keyed by trace so a new trace resets selection + scroll state.
+                            <TraceWaterfallView
+                                key={traceId ?? ''}
+                                spans={spans}
+                                selectedSpanId={selectedSpanId}
+                                onSpanSelect={onSelectSpan}
+                                highlightedOperationKey={highlightedOperationKey}
+                                hasMore={hasMoreSpans}
+                                loadingMore={loadingMoreSpans}
+                                onLoadMore={onLoadMoreSpans}
+                            />
+                        )}
                     </div>
                     <div
                         ref={inspectorRef}

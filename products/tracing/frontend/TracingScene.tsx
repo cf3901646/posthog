@@ -108,6 +108,7 @@ function TracingSceneContents(): JSX.Element {
         traceSpansLoadingMore,
         selectedTraceLoadFailed,
         highlightedOperationKey,
+        traceViewMode,
         aggregation,
         aggregationLoading,
         filters,
@@ -149,6 +150,7 @@ function TracingSceneContents(): JSX.Element {
         setVisibleRowRange,
         selectInspectorTab,
         highlightOperation,
+        setTraceViewMode,
         setSort,
         setChartType,
         applyHeatmapBrush,
@@ -406,6 +408,8 @@ function TracingSceneContents(): JSX.Element {
                 onSelectSpan={selectSpan}
                 highlightedOperationKey={highlightedOperationKey}
                 onHighlightOperation={highlightOperation}
+                traceViewMode={traceViewMode}
+                onSetTraceViewMode={setTraceViewMode}
                 onClose={closeTrace}
             />
             <LemonModal

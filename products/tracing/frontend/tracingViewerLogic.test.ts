@@ -262,6 +262,19 @@ describe('tracingViewerLogic', () => {
         expect(logic.values.highlightedOperationKey).toBe(keeps ? operationKey : null)
     })
 
+    // The Operations tab stays on screen across a view switch. The waterfall dims spans by the
+    // highlighted key and the call tree opens on the same operation, so a switch that cleared the
+    // key would drop the user's pick when they only asked for another view of the same trace.
+    it('keeps the highlighted operation when the view changes', () => {
+        logic.actions.openTrace('trace-x')
+        logic.actions.highlightOperation('web\0cache GET')
+
+        logic.actions.setTraceViewMode('calltree')
+
+        expect(logic.values.traceViewMode).toBe('calltree')
+        expect(logic.values.highlightedOperationKey).toBe('web\0cache GET')
+    })
+
     describe('closeTrace', () => {
         // The attribute buttons in the drawer queue their query for when the drawer closes.
         // Without this, closing the drawer would silently drop the filter the user just added.

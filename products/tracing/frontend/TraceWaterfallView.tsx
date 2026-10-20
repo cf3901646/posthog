@@ -2,7 +2,7 @@ import { CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from
 import { List, useDynamicRowHeight, useListRef } from 'react-window'
 
 import { IconChevronRight, IconCollapse, IconExpand, IconWarning } from '@posthog/icons'
-import { LemonButton, Spinner } from '@posthog/lemon-ui'
+import { LemonButton } from '@posthog/lemon-ui'
 
 import { getSeriesColor } from 'lib/colors'
 import { AutoSizer } from 'lib/components/AutoSizer'
@@ -11,6 +11,7 @@ import { Tooltip } from 'lib/lemon-ui/Tooltip'
 import { cn } from 'lib/utils/css-classes'
 
 import { compareRowKey } from './compareUtils'
+import { TraceLoadMoreFooter } from './components/TraceDrawer/TraceLoadMoreFooter'
 import {
     buildSpanTree,
     collectCollapsibleSpanIds,
@@ -754,20 +755,7 @@ export function TraceWaterfallView({
 
             {/* Infinite-scroll footer: a trace can exceed the per-page span cap, so page the rest in
                 as the user scrolls to the bottom. The button is a manual fallback to the auto-trigger. */}
-            {hasMore && (
-                <div className="flex items-center justify-center gap-2 py-2 text-xs text-muted border-t border-border">
-                    {loadingMore ? (
-                        <>
-                            <Spinner />
-                            <span>Loading more spans…</span>
-                        </>
-                    ) : (
-                        <LemonButton size="xsmall" type="tertiary" onClick={() => onLoadMore?.()}>
-                            Load more spans
-                        </LemonButton>
-                    )}
-                </div>
-            )}
+            {hasMore && <TraceLoadMoreFooter loadingMore={loadingMore} onLoadMore={onLoadMore} />}
 
             {/* Full-height splitter between label column and timeline */}
             <div
