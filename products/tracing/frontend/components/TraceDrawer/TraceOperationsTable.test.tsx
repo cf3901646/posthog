@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 
 import { initKeaTests } from '~/test/init'
 
@@ -12,12 +12,12 @@ jest.mock('lib/components/AutoSizer', () => ({
         renderProp({ height: 600, width: 800 }),
 }))
 
-function makeOperation(service_name: string, name: string, total_duration_nano: number): TraceOperation {
+function makeOperation(service_name: string, name: string, total_duration_nano: number, count = 1): TraceOperation {
     return {
         key: compareRowKey({ service_name, name }),
         service_name,
         name,
-        count: 1,
+        count,
         total_duration_nano,
         avg_duration_nano: total_duration_nano,
         p50_duration_nano: total_duration_nano,
@@ -32,6 +32,8 @@ describe('TraceOperationsTable', () => {
     beforeEach(() => {
         initKeaTests()
     })
+
+    afterEach(() => cleanup())
 
     it('highlights the clicked operation and clears the highlight when the same operation is clicked again', () => {
         // The second click must emit null. If it emits the key again, a click on the table can never
@@ -64,11 +66,17 @@ describe('TraceOperationsTable', () => {
         expect(onHighlightOperation.mock.calls).toEqual([[orders.key], [null]])
     })
 
-    it('renders only the operations with the largest totals and says how many there are', () => {
-        // A trace with many operations must not render every row. The last assertion also fails when
-        // the cap keeps the wrong end of the list, because op-29 has the smallest total.
+    it.each([
+        // Fails when the cap keeps the wrong end of the list, because op-29 has the smallest total.
+        { sortedBy: 'total', header: null, shown: 'op-0', hidden: 'op-29' },
+        // Fails when the cap runs before the sort. That cap keeps the five largest totals, so op-0, the
+        // operation with the fewest spans, stays and op-29, the one with the most, never shows.
+        { sortedBy: 'span count', header: 'Spans', shown: 'op-29', hidden: 'op-0' },
+    ])('renders only the top operations by $sortedBy and says how many there are', ({ header, shown, hidden }) => {
+        // A trace with many operations must not render every row. The span counts rise as the totals
+        // fall, so the two sorts keep opposite ends of the list.
         const operations = Array.from({ length: 30 }, (_, index) =>
-            makeOperation('catalog-api', `op-${index}`, (30 - index) * 1_000_000)
+            makeOperation('catalog-api', `op-${index}`, (30 - index) * 1_000_000, index + 1)
         )
         const { container } = render(
             <TraceOperationsTable
@@ -77,9 +85,13 @@ describe('TraceOperationsTable', () => {
                 onHighlightOperation={jest.fn()}
             />
         )
+        if (header) {
+            fireEvent.click(screen.getByText(header))
+        }
 
         expect(container.querySelectorAll('button[data-attr="tracing-trace-operations-highlight"]')).toHaveLength(5)
-        expect(screen.getByText('Showing the top 5 of 30 operations by total time.')).toBeTruthy()
-        expect(screen.queryByText('op-29')).toBeNull()
+        expect(screen.getByText('Showing 5 of 30 operations.')).toBeTruthy()
+        expect(screen.getByText(shown)).toBeTruthy()
+        expect(screen.queryByText(hidden)).toBeNull()
     })
 })

@@ -30,6 +30,11 @@ export function virtualizedTableHeight(rowCount: number): number {
 
 export type VirtualizedSortOrder = 1 | -1
 
+export interface VirtualizedSort {
+    columnKey: string
+    order: VirtualizedSortOrder
+}
+
 export interface VirtualizedTableColumn<T> {
     key: string
     title: ReactNode
@@ -163,7 +168,13 @@ export interface VirtualizedTableProps<T> {
     onRowClick?: (record: T) => void
     /** Extra classes for one row, such as a highlight. */
     rowClassName?: (record: T) => string | undefined
-    defaultSort?: { columnKey: string; order: VirtualizedSortOrder }
+    defaultSort?: VirtualizedSort
+    /**
+     * Controlled sort, which replaces `defaultSort` and the table's own sort state. A caller that sorts its
+     * full list before it cuts the list down owns the sort, because the table sees only the rows it gets.
+     */
+    sort?: VirtualizedSort | null
+    onSortChange?: (sort: VirtualizedSort | null) => void
     emptyLabel?: string
     'data-attr'?: string
 }
@@ -177,11 +188,15 @@ export function VirtualizedTable<T>({
     onRowClick,
     rowClassName,
     defaultSort,
+    sort: controlledSort,
+    onSortChange,
     emptyLabel = 'No rows',
     'data-attr': dataAttr,
 }: VirtualizedTableProps<T>): JSX.Element {
-    const [sortKey, setSortKey] = useState<string | null>(defaultSort?.columnKey ?? null)
-    const [sortOrder, setSortOrder] = useState<VirtualizedSortOrder>(defaultSort?.order ?? -1)
+    const [internalSort, setInternalSort] = useState<VirtualizedSort | null>(defaultSort ?? null)
+    const sort = controlledSort === undefined ? internalSort : controlledSort
+    const sortKey = sort?.columnKey ?? null
+    const sortOrder = sort?.order ?? -1
     const resizableColumns = useResizableColumns(tableKey, columns)
 
     const rows = useMemo(() => {
@@ -193,12 +208,11 @@ export function VirtualizedTable<T>({
     }, [dataSource, columns, sortKey, sortOrder])
 
     const onSort = (key: string): void => {
-        if (key === sortKey) {
-            setSortOrder((order) => (order === 1 ? -1 : 1))
-        } else {
-            setSortKey(key)
-            setSortOrder(-1)
+        const next: VirtualizedSort = { columnKey: key, order: key === sortKey && sortOrder === -1 ? 1 : -1 }
+        if (controlledSort === undefined) {
+            setInternalSort(next)
         }
+        onSortChange?.(next)
     }
 
     if (rows.length === 0) {

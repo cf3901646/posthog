@@ -1,19 +1,26 @@
-import { memo, useCallback, useMemo } from 'react'
+import { memo, useCallback, useMemo, useState } from 'react'
 
 import { humanFriendlyNumber } from 'lib/utils/numbers'
 
 import type { TraceOperation } from '../../traceOperations'
 import { formatDuration } from '../../TraceWaterfallView'
-import { VirtualizedTable, VirtualizedTableColumn, virtualizedTableHeight } from '../../VirtualizedTable'
+import {
+    VirtualizedSort,
+    VirtualizedTable,
+    VirtualizedTableColumn,
+    virtualizedTableHeight,
+} from '../../VirtualizedTable'
 
 // The panel lists the main contributors to the trace. The waterfall shows all of the spans. The panel
 // is as tall as the rows it shows, so a small cap keeps the waterfall near the top of the drawer.
 const MAX_OPERATIONS = 5
 
+const DEFAULT_SORT: VirtualizedSort = { columnKey: 'total', order: -1 }
+
 const HIGHLIGHTED_ROW_CLASS = 'bg-accent-highlight-secondary font-semibold'
 
 export interface TraceOperationsTableProps {
-    /** Sorted by total time descending, as summarizeTraceOperations returns them; the cap keeps the head. */
+    /** Sorted by total time descending, as summarizeTraceOperations returns them. */
     operations: TraceOperation[]
     highlightedOperationKey: string | null
     /** Called with the row's key, or null when the highlighted row is clicked again. */
@@ -91,7 +98,7 @@ export const TraceOperationsTable = memo(function TraceOperationsTable({
     onHighlightOperation,
     partial = false,
 }: TraceOperationsTableProps): JSX.Element {
-    const visibleOperations = useMemo(() => operations.slice(0, MAX_OPERATIONS), [operations])
+    const [sort, setSort] = useState<VirtualizedSort | null>(DEFAULT_SORT)
     const columns = useMemo(
         (): VirtualizedTableColumn<TraceOperation>[] => [
             {
@@ -129,6 +136,15 @@ export const TraceOperationsTable = memo(function TraceOperationsTable({
         ],
         [highlightedOperationKey, onHighlightOperation]
     )
+    // Sort the whole list before the cap. Otherwise a sort by Spans only reorders the five operations with
+    // the largest totals, and the most-called operations of the trace stay hidden.
+    const visibleOperations = useMemo((): TraceOperation[] => {
+        const sorter = columns.find((column) => column.key === sort?.columnKey)?.sorter
+        if (!sort || !sorter) {
+            return operations.slice(0, MAX_OPERATIONS)
+        }
+        return [...operations].sort((a, b) => sorter(a, b) * sort.order).slice(0, MAX_OPERATIONS)
+    }, [operations, columns, sort])
     const onRowClick = useCallback(
         (row: TraceOperation): void => onHighlightOperation(nextHighlightKey(row, highlightedOperationKey)),
         [highlightedOperationKey, onHighlightOperation]
@@ -159,12 +175,13 @@ export const TraceOperationsTable = memo(function TraceOperationsTable({
                     rowKey={operationRowKey}
                     onRowClick={onRowClick}
                     rowClassName={rowClassName}
-                    defaultSort={{ columnKey: 'total', order: -1 }}
+                    sort={sort}
+                    onSortChange={setSort}
                 />
             </div>
             {operations.length > MAX_OPERATIONS && (
                 <p className="text-xs text-muted mt-1">
-                    {`Showing the top ${MAX_OPERATIONS} of ${humanFriendlyNumber(operations.length)} operations by total time.`}
+                    {`Showing ${MAX_OPERATIONS} of ${humanFriendlyNumber(operations.length)} operations.`}
                 </p>
             )}
         </>

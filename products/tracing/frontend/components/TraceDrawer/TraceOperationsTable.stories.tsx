@@ -54,14 +54,16 @@ const OPERATIONS: TraceOperation[] = [
 ]
 
 // 30 operations in a 1 s trace. The totals fall by 2 ms per row and add up to 930 ms, so each share
-// is the total over 1 s.
+// is the total over 1 s. The span counts rise by 1 per row, so a sort by Spans shows the other end
+// of the list.
 const MANY_OPERATIONS: TraceOperation[] = Array.from({ length: 30 }, (_, index) => {
     const total = ms(60 - index * 2)
+    const count = index + 1
     return operation('catalog-api', `GET /items/${index + 1}`, {
-        count: 2,
+        count,
         total_duration_nano: total,
-        avg_duration_nano: total / 2,
-        p50_duration_nano: total / 2,
+        avg_duration_nano: total / count,
+        p50_duration_nano: total / count,
         share: total / ms(1000),
     })
 })
@@ -100,7 +102,10 @@ export const Narrow: Story = {
     decorators: [fixedWidth('w-[520px]')],
 }
 
-/** A trace with more operations than the top 5 the panel lists, so the note under the table shows. */
+/**
+ * A trace with more operations than the panel lists, so the note under the table shows. The panel shows
+ * the top 5 by the sorted column.
+ */
 export const Capped: Story = {
     args: { operations: MANY_OPERATIONS },
     decorators: [fixedWidth('w-[1100px]')],
