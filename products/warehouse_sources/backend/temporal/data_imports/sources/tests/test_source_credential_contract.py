@@ -90,6 +90,7 @@ NOT_CHECKABLE: dict[str, str] = {
     "Ably": "config",
     "AppStoreConnect": "config",
     "AppleSearchAds": "config",
+    "AwsDocumentDB": "driver",
     "AzureCostManagement": "config",
     "BigQuery": "driver",
     "BingAds": "database",
