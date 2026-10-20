@@ -165,6 +165,7 @@ function ReportCardRaw({
     const cardTimeTitle = timestampField === 'created_at' ? 'Created' : 'Last updated'
     const redesign = useFeatureFlag('INBOX_REDESIGN')
     const metricsEnabled = useFeatureFlag('SIGNALS_REPORT_METRICS')
+    const plainReportTitles = useFeatureFlag('SIGNALS_PLAIN_REPORT_TITLES')
     // The impact column carries its own flag on top of the redesign: its figures come from live
     // queries, so it rolls out per team as the metric quality is verified.
     const showImpactColumn = redesign && metricsEnabled
@@ -237,7 +238,7 @@ function ReportCardRaw({
                         hasPr && showImpactColumn && '@lg:pr-0'
                     )}
                 >
-                    {hasPr && conventionalTitle && (
+                    {hasPr && !plainReportTitles && conventionalTitle && (
                         <ConventionalCommitScopeTag type={conventionalTitle.type} scope={conventionalTitle.scope} />
                     )}
                     {cardTitle}
