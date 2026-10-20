@@ -30,6 +30,7 @@ tools:
             idempotent: false
         enrich_url: '{id}'
         title: Create feature flag
+        hooks: featureFlags/conditionIdHooks
         description: >
             Create a feature flag in the current project. Call when the user asks to add a flag, gate a feature behind a
             flag, set up a percentage rollout, or deliver a remote config value. If this flag is for a new version of a
@@ -305,6 +306,7 @@ tools:
             idempotent: true
         enrich_url: '{id}'
         title: Get feature flag definition
+        hooks: featureFlags/conditionIdHooks
         description: >
             Get a single feature flag's full definition — rollout conditions, variants, payloads, active state — by its
             numeric ID. Use `feature-flag-get-definition-by-key` when you only have the string key used in code; use
@@ -881,14 +883,7 @@ tools:
                     - feature_flag_id
                     - featureFlagId
             filters:
-                description: >
-                    Full release-condition object (replaces filters at the API). For group flags set
-                    aggregation_group_type_index and property type "group" + group_type_index. Omitted type /
-                    group_type_index / aggregation_group_type_index are filled from the existing flag to prevent silent
-                    person demotion (see #46501). When conditions don't all target the same thing (persons and a group
-                    type, or different group types) and you add, remove, reorder, or change the properties of
-                    conditions, set aggregation_group_type_index on each condition (null for persons), or the update is
-                    refused.
+                input_schema: UpdateFeatureFlagFiltersSchema
             is_remote_configuration:
                 description:
                     Whether this flag delivers a payload instead of gating a feature (Remote Config mode). When true, set the

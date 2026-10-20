@@ -6,6 +6,7 @@ import {
     aiObservabilityOfflineExperimentsUploadCreateBodyResultsMax,
 } from '../generated/ai_observability/api'
 import { BillingUsageRetrieveQueryParams } from '../generated/billing/api'
+import { FeatureFlagsPartialUpdateBody } from '../generated/feature_flags/api'
 // Relative (not `@/`) imports: this module is loaded by the tsx schema-generation
 // script, and both modules are pure constants/functions — no `.md` imports to choke on.
 import { castStringToInt, normalizeParamAliases } from '../tools/cast-helpers'
@@ -1289,3 +1290,34 @@ export const WorkflowActionEmailPatchSchema = z
             })
         }
     })
+
+const FeatureFlagUpdateFilters = FeatureFlagsPartialUpdateBody().shape.filters.unwrap()
+const FeatureFlagUpdateConditionGroup = FeatureFlagUpdateFilters.shape.groups.unwrap().element
+
+export const UpdateFeatureFlagFiltersSchema = FeatureFlagUpdateFilters.extend({
+    groups: z
+        .array(
+            FeatureFlagUpdateConditionGroup.extend({
+                condition_id: z
+                    .string()
+                    .optional()
+                    .describe(
+                        'ID of the stored condition this one came from, copied from the flag definition you read. ' +
+                            'Omit it on a new condition. The update is refused when it matches no current condition, ' +
+                            'because the flag changed after you read it.'
+                    ),
+            })
+        )
+        .optional()
+        .describe('Release condition groups for the feature flag.'),
+}).describe(
+    'Full release-condition object (replaces filters at the API). Read the flag first. On every condition you keep, ' +
+        'edit, or move, send its `condition_id` exactly as the read returned it, and leave it off a new condition. ' +
+        "The tool uses it to keep each condition's property types and targeting when you reorder, delete, or edit " +
+        'conditions. For group flags set aggregation_group_type_index and property type "group" + group_type_index. ' +
+        'Omitted type / group_type_index / aggregation_group_type_index are filled from the existing flag to prevent ' +
+        "silent person demotion (see #46501). When conditions don't all target the same thing (persons and a group " +
+        'type, or different group types) and you add, remove, reorder, or change the properties of conditions ' +
+        'without `condition_id` values, set aggregation_group_type_index on each condition (null for persons), or ' +
+        'the update is refused.'
+)
