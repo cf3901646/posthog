@@ -1,6 +1,6 @@
 import { useActions, useMountedLogic, useValues } from 'kea'
 import { router } from 'kea-router'
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { useFeatureFlag } from 'lib/hooks/useFeatureFlag'
 import { AIConsentPopoverWrapper } from 'scenes/settings/organization/AIConsentPopoverWrapper'
@@ -42,12 +42,12 @@ import { ComposerModeShortcut } from '../../../components/composer/ComposerModeS
 import { useDebouncedDraft } from '../../../components/composer/useDebouncedDraft'
 import { OnboardingReplayButton } from '../../../components/onboarding/OnboardingReplayButton'
 import { QuillAttachedContextPicker } from '../../../components/quill/QuillAttachedContextPicker'
-import { QuillComposerAttachButton } from '../../../components/quill/QuillComposerAttachButton'
 import { QuillComposerLayout } from '../../../components/quill/QuillComposerLayout'
 import { QuillComposerSendButton } from '../../../components/quill/QuillComposerSendButton'
 import { QuillOnboardingReplayButton } from '../../../components/quill/QuillOnboardingReplayButton'
 import { taskTrackerSceneLogic } from '../taskTrackerSceneLogic'
 import { RepositorySelector } from './RepositorySelector'
+import { TaskComposerAddMenu } from './TaskComposerAddMenu'
 
 export interface TaskComposerProps {
     /** `inline` drops the welcome header and the full-height centering, for a composer placed inside a host page. */
@@ -118,6 +118,9 @@ export function TaskComposer({
     const groupRef = useRef<HTMLDivElement>(null)
     const skin = useThreadSkin()
     const showSuggestions = skin === 'lemon' && !composerOverride?.hideSuggestions
+    const repositoryEnabled = !composerOverride?.hideRepositorySelector
+    const [repositoryRequested, setRepositoryRequested] = useState(false)
+    const showRepositoryChip = repositoryEnabled && (repositoryRequested || !!newTaskData.repositoryConfig.repository)
 
     useEffect(() => {
         if (focusRequest > 0) {
@@ -145,7 +148,8 @@ export function TaskComposer({
     const field = (
         <Composer.Field>
             <Composer.Placeholder>
-                {composerOverride?.placeholder ?? 'Describe the task in detail…'}
+                {composerOverride?.placeholder ??
+                    (skin === 'quill' ? 'Ask a question or describe what to build…' : 'Describe the task in detail…')}
             </Composer.Placeholder>
             <Composer.Textarea autoFocus={autoFocus} onPaste={onPaste} data-attr="task-composer-input" />
         </Composer.Field>
@@ -228,7 +232,7 @@ export function TaskComposer({
                 >
                     {/* Repo/branch picker sits 8px above the input it configures. */}
                     <div className="w-full flex flex-col gap-2">
-                        {!composerOverride?.hideRepositorySelector && (
+                        {skin === 'lemon' && repositoryEnabled && (
                             <RepositorySelector
                                 value={newTaskData.repositoryConfig}
                                 onChange={(config) => setNewTaskData({ repositoryConfig: config })}
@@ -250,6 +254,21 @@ export function TaskComposer({
                                     textAreaRef={textAreaRef}
                                     chips={
                                         <>
+                                            {showRepositoryChip && (
+                                                <RepositorySelector
+                                                    value={newTaskData.repositoryConfig}
+                                                    onChange={(config) => {
+                                                        if (
+                                                            !config.repository &&
+                                                            config.integrationId ===
+                                                                newTaskData.repositoryConfig.integrationId
+                                                        ) {
+                                                            setRepositoryRequested(false)
+                                                        }
+                                                        setNewTaskData({ repositoryConfig: config })
+                                                    }}
+                                                />
+                                            )}
                                             <AttachedContextChips />
                                             <ComposerAttachmentChips attachmentsKey={attachmentsKey} />
                                         </>
@@ -258,9 +277,12 @@ export function TaskComposer({
                                     send={withConsent(<QuillComposerSendButton data-attr="task-composer-send" />)}
                                     controls={
                                         <>
-                                            <QuillComposerAttachButton
+                                            <TaskComposerAddMenu
                                                 attachmentsKey={attachmentsKey}
                                                 dropTargetRef={groupRef}
+                                                onAddRepository={
+                                                    repositoryEnabled ? () => setRepositoryRequested(true) : undefined
+                                                }
                                             />
                                             <QuillAttachedContextPicker />
                                             {modelPicker}
