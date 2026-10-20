@@ -163,6 +163,7 @@ from products.tasks.backend.models import (
     TaskOwnershipChangedError,
     TaskPin,
     TaskRun,
+    TaskRunAlreadyLiveError,
     TaskSearchDocument,
     TaskSession,
     TaskThreadMessage,
@@ -6460,7 +6461,7 @@ def bootstrap_task_run(
         run = task.create_run(
             environment=environment, mode=mode, branch=branch, extra_state=extra_state, acting_user_id=user_id
         )
-    except InvalidModelAccess as error:
+    except (InvalidModelAccess, TaskRunAlreadyLiveError) as error:
         return contracts.TaskRunCreateResult(error=contracts.TaskRunValidationError(kind="detail", detail=str(error)))
     except InvalidTaskOriginError as error:
         return contracts.TaskRunCreateResult(
@@ -9865,6 +9866,8 @@ def run_task(
                 _attach_staged_artifacts_to_run(
                     task_run, task, staged_artifacts=staged_artifacts, artifact_ids=pending_user_artifact_ids
                 )
+    except TaskRunAlreadyLiveError as error:
+        return contracts.TaskRunResult(error=contracts.TaskValidationError(kind="detail", detail=str(error)))
     except InvalidTaskOriginError as error:
         return contracts.TaskRunResult(
             error=contracts.TaskValidationError(
@@ -12273,6 +12276,15 @@ def request_canvas_fix(task_id: str | UUID, team_id: int, *, prompt: str, acting
                 return "already_queued"
             # The workflow is gone despite the non-terminal row (evicted or stale); fall
             # through to a fresh run rather than reporting a dead end.
+            stale_run = run
+            if TaskRun.objects.filter(
+                id=stale_run.id, status__in=(TaskRun.Status.QUEUED, TaskRun.Status.IN_PROGRESS)
+            ).update(status=TaskRun.Status.FAILED):
+                transaction.on_commit(
+                    lambda: stale_run.mark_failed(
+                        "The run's workflow ended without finishing the run.", error_type="workflow_gone"
+                    )
+                )
         task_run = task.create_run(mode="background", extra_state={"pending_user_message": prompt})
         from products.tasks.backend.logic.services.workflow_dispatch import (  # noqa: PLC0415
             WorkflowDispatchOptions,
