@@ -232,15 +232,12 @@ export function TraceDrawer({
                                             </span>
                                         ),
                                         content: (
-                                            // Bounded so a trace with many distinct operations does not push the waterfall off screen.
-                                            <div className="max-h-60 overflow-y-auto">
-                                                <TraceOperationsTable
-                                                    operations={operationsSummary.operations}
-                                                    highlightedOperationKey={highlightedOperationKey}
-                                                    onHighlightOperation={onHighlightOperation}
-                                                    partial={hasMoreSpans}
-                                                />
-                                            </div>
+                                            <TraceOperationsTable
+                                                operations={operationsSummary.operations}
+                                                highlightedOperationKey={highlightedOperationKey}
+                                                onHighlightOperation={onHighlightOperation}
+                                                partial={hasMoreSpans}
+                                            />
                                         ),
                                     },
                                 ]}

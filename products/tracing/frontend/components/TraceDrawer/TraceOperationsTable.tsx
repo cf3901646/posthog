@@ -1,14 +1,16 @@
 import { memo, useCallback, useMemo } from 'react'
 
-import { LemonTable, LemonTableColumns } from '@posthog/lemon-ui'
-
 import { humanFriendlyNumber } from 'lib/utils/numbers'
 
 import type { TraceOperation } from '../../traceOperations'
 import { formatDuration } from '../../TraceWaterfallView'
+import { VirtualizedTable, VirtualizedTableColumn, virtualizedTableHeight } from '../../VirtualizedTable'
 
-// The panel lists the main contributors to the trace. The waterfall shows all of the spans.
-export const MAX_OPERATIONS = 25
+// The panel lists the main contributors to the trace. The waterfall shows all of the spans. The panel
+// is as tall as the rows it shows, so a small cap keeps the waterfall near the top of the drawer.
+const MAX_OPERATIONS = 5
+
+const HIGHLIGHTED_ROW_CLASS = 'bg-accent-highlight-secondary font-semibold'
 
 export interface TraceOperationsTableProps {
     /** Sorted by total time descending, as summarizeTraceOperations returns them; the cap keeps the head. */
@@ -28,57 +30,61 @@ function nextHighlightKey(operation: TraceOperation, highlightedOperationKey: st
     return operation.key === highlightedOperationKey ? null : operation.key
 }
 
-// LemonTable renders `width: 0` as a 1% column, which shrinks to its content. The numeric columns do
-// that, so Operation gets all the width they leave. The service name shares the Operation cell instead
-// of a column of its own, so the table fits next to the span inspector in a 1280px window. max-w-0
-// removes the cell text from the column's minimum width, so a long name truncates in its cell instead
-// of widening the table. min-w-32 keeps enough of the name visible to read. Below that width, the
-// table scrolls inside LemonTable's own container.
-const NUMERIC_COLUMN = { width: 0, align: 'right', className: 'whitespace-nowrap' } as const
+function operationRowKey(operation: TraceOperation): string {
+    return operation.key
+}
 
-const NUMERIC_COLUMNS: LemonTableColumns<TraceOperation> = [
+// The service name shares the Operation cell instead of a column of its own. Together the default widths
+// fit in 520px, the width of the drawer next to an open side panel. On a wider drawer, Operation grows into
+// the width the numeric columns leave, and a person can drag it wider to read a long name.
+const NUMERIC_COLUMNS: VirtualizedTableColumn<TraceOperation>[] = [
     {
         key: 'count',
         title: 'Spans',
-        ...NUMERIC_COLUMN,
+        width: 72,
+        align: 'right',
         sorter: (a, b) => a.count - b.count,
-        render: (_, row) => humanFriendlyNumber(row.count),
+        render: (row) => humanFriendlyNumber(row.count),
     },
     {
         key: 'total',
         title: 'Total',
-        ...NUMERIC_COLUMN,
+        width: 80,
+        align: 'right',
         tooltip: 'Sum of span durations. Nested spans count in both parent and child.',
         sorter: (a, b) => a.total_duration_nano - b.total_duration_nano,
-        render: (_, row) => <span className="font-mono">{formatDuration(row.total_duration_nano)}</span>,
+        render: (row) => <span className="font-mono">{formatDuration(row.total_duration_nano)}</span>,
     },
     {
         key: 'avg',
         title: 'Avg',
-        ...NUMERIC_COLUMN,
+        width: 72,
+        align: 'right',
         sorter: (a, b) => a.avg_duration_nano - b.avg_duration_nano,
-        render: (_, row) => <span className="font-mono">{formatDuration(row.avg_duration_nano)}</span>,
+        render: (row) => <span className="font-mono">{formatDuration(row.avg_duration_nano)}</span>,
     },
     {
         key: 'p50',
         title: 'p50',
-        ...NUMERIC_COLUMN,
+        width: 72,
+        align: 'right',
         sorter: (a, b) => a.p50_duration_nano - b.p50_duration_nano,
-        render: (_, row) => <span className="font-mono">{formatDuration(row.p50_duration_nano)}</span>,
+        render: (row) => <span className="font-mono">{formatDuration(row.p50_duration_nano)}</span>,
     },
     {
         key: 'share',
         title: 'Share',
-        ...NUMERIC_COLUMN,
+        width: 72,
+        align: 'right',
         tooltip: 'Total as a share of the trace duration. Nested spans can push this above 100%.',
         sorter: (a, b) => a.share - b.share,
-        render: (_, row) => `${(row.share * 100).toFixed(1)}%`,
+        render: (row) => `${(row.share * 100).toFixed(1)}%`,
     },
 ]
 
-// Memoized because the drawer re-renders on every mousemove of an inspector resize drag, and
-// LemonTable does not virtualize its rows. The props stay the same during a drag, so the table skips
-// that work. The stable callbacks below also keep the memo on each LemonTable row in place.
+// Memoized because the drawer re-renders on every mousemove of an inspector resize drag. The props stay
+// the same during a drag, so the table skips that work. The columns stay the same object between renders,
+// so useResizableColumns reuses the widths it resolved last time.
 export const TraceOperationsTable = memo(function TraceOperationsTable({
     operations,
     highlightedOperationKey,
@@ -87,16 +93,17 @@ export const TraceOperationsTable = memo(function TraceOperationsTable({
 }: TraceOperationsTableProps): JSX.Element {
     const visibleOperations = useMemo(() => operations.slice(0, MAX_OPERATIONS), [operations])
     const columns = useMemo(
-        (): LemonTableColumns<TraceOperation> => [
+        (): VirtualizedTableColumn<TraceOperation>[] => [
             {
                 key: 'name',
                 title: 'Operation',
-                className: 'w-full max-w-0 min-w-32',
+                width: 144,
+                grow: true,
                 sorter: (a, b) => a.name.localeCompare(b.name),
-                render: (_, row) => {
+                render: (row) => {
                     const isHighlighted = row.key === highlightedOperationKey
-                    // A table row cannot take keyboard focus, so the cell holds a real button for
-                    // keyboard users. The row keeps its own click handler for mouse users.
+                    // The row's own role="button" cannot say which operation is highlighted, so the cell
+                    // holds a real button whose aria-pressed tells assistive technology.
                     return (
                         <button
                             type="button"
@@ -122,36 +129,39 @@ export const TraceOperationsTable = memo(function TraceOperationsTable({
         ],
         [highlightedOperationKey, onHighlightOperation]
     )
-    const onRow = useCallback(
-        (row: TraceOperation): { onClick: () => void; title: string } => ({
-            onClick: () => onHighlightOperation(nextHighlightKey(row, highlightedOperationKey)),
-            title: highlightTitle(row.key === highlightedOperationKey),
-        }),
+    const onRowClick = useCallback(
+        (row: TraceOperation): void => onHighlightOperation(nextHighlightKey(row, highlightedOperationKey)),
         [highlightedOperationKey, onHighlightOperation]
     )
-    const rowStatus = useCallback(
-        (row: TraceOperation): 'highlighted' | null => (row.key === highlightedOperationKey ? 'highlighted' : null),
+    const rowClassName = useCallback(
+        (row: TraceOperation): string | undefined =>
+            row.key === highlightedOperationKey ? HIGHLIGHTED_ROW_CLASS : undefined,
         [highlightedOperationKey]
     )
 
     return (
         <>
             {partial && <p className="text-xs text-muted mb-1">Counts cover the spans loaded so far.</p>}
-            <LemonTable<TraceOperation>
-                // pinned: autocapture and Playwright select on this value, so renaming it breaks them
-                data-attr="tracing-trace-operations-table"
-                size="small"
-                embedded
-                rowKey="key"
-                columns={columns}
-                dataSource={visibleOperations}
-                defaultSorting={{ columnKey: 'total', order: -1 }}
-                // The tracing scene keeps its own state in the URL. Sorting this table must not add an
-                // `order` param to that URL or a browser history entry for each click on a header.
-                useURLForSorting={false}
-                onRow={onRow}
-                rowStatus={rowStatus}
-            />
+            {/* VirtualizedTable needs a box of definite height. This one fits every visible row, so the table does not scroll. */}
+            <div
+                className="flex flex-col"
+                // eslint-disable-next-line react/forbid-dom-props
+                style={{ height: virtualizedTableHeight(visibleOperations.length) }}
+            >
+                <VirtualizedTable<TraceOperation>
+                    // pinned: identifies stored column widths, so renaming it resets everyone's widths
+                    tableKey="trace-operations"
+                    // pinned: autocapture and Playwright select on this value, so renaming it breaks them
+                    data-attr="tracing-trace-operations-table"
+                    columns={columns}
+                    dataSource={visibleOperations}
+                    loading={false}
+                    rowKey={operationRowKey}
+                    onRowClick={onRowClick}
+                    rowClassName={rowClassName}
+                    defaultSort={{ columnKey: 'total', order: -1 }}
+                />
+            </div>
             {operations.length > MAX_OPERATIONS && (
                 <p className="text-xs text-muted mt-1">
                     {`Showing the top ${MAX_OPERATIONS} of ${humanFriendlyNumber(operations.length)} operations by total time.`}

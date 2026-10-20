@@ -100,7 +100,7 @@ export const Narrow: Story = {
     decorators: [fixedWidth('w-[520px]')],
 }
 
-/** A trace with more operations than the panel lists, so the note under the table shows. */
+/** A trace with more operations than the top 5 the panel lists, so the note under the table shows. */
 export const Capped: Story = {
     args: { operations: MANY_OPERATIONS },
     decorators: [fixedWidth('w-[1100px]')],

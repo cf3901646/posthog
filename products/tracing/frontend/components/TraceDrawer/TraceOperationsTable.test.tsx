@@ -1,8 +1,16 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 
+import { initKeaTests } from '~/test/init'
+
 import { compareRowKey } from '../../compareUtils'
 import type { TraceOperation } from '../../traceOperations'
-import { MAX_OPERATIONS, TraceOperationsTable } from './TraceOperationsTable'
+import { TraceOperationsTable } from './TraceOperationsTable'
+
+// Give the table real dimensions so react-window renders its rows. AutoSizer measures 0x0 in jsdom.
+jest.mock('lib/components/AutoSizer', () => ({
+    AutoSizer: ({ renderProp }: { renderProp: (size: { height: number; width: number }) => React.ReactNode }) =>
+        renderProp({ height: 600, width: 800 }),
+}))
 
 function makeOperation(service_name: string, name: string, total_duration_nano: number): TraceOperation {
     return {
@@ -21,6 +29,10 @@ const orders = makeOperation('checkout-api', 'POST /api/orders', 2_000_000)
 const cache = makeOperation('checkout-api', 'cache GET', 1_000_000)
 
 describe('TraceOperationsTable', () => {
+    beforeEach(() => {
+        initKeaTests()
+    })
+
     it('highlights the clicked operation and clears the highlight when the same operation is clicked again', () => {
         // The second click must emit null. If it emits the key again, a click on the table can never
         // clear the dimming in the waterfall. The clicks go through the keyboard-reachable button, so
@@ -66,10 +78,8 @@ describe('TraceOperationsTable', () => {
             />
         )
 
-        expect(container.querySelectorAll('button[data-attr="tracing-trace-operations-highlight"]')).toHaveLength(
-            MAX_OPERATIONS
-        )
-        expect(screen.getByText('Showing the top 25 of 30 operations by total time.')).toBeTruthy()
+        expect(container.querySelectorAll('button[data-attr="tracing-trace-operations-highlight"]')).toHaveLength(5)
+        expect(screen.getByText('Showing the top 5 of 30 operations by total time.')).toBeTruthy()
         expect(screen.queryByText('op-29')).toBeNull()
     })
 })
