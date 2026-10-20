@@ -9,6 +9,7 @@ import { AutoSizer } from 'lib/components/AutoSizer'
 import { SizeProps } from 'lib/components/AutoSizer/AutoSizer'
 import { Tooltip } from 'lib/lemon-ui/Tooltip'
 import { cn } from 'lib/utils/css-classes'
+import { humanFriendlyNumber } from 'lib/utils/numbers'
 
 import { compareRowKey } from './compareUtils'
 import {
@@ -16,11 +17,11 @@ import {
     collectCollapsibleSpanIds,
     connectorLinesOf,
     countDescendants,
-    flattenTree,
     getTimelineTicks,
     parseTimestampUs,
     type SpanNode,
 } from './spanTree'
+import { buildWaterfallRows, rowKey, rowOperationKey, runTimeRange, type WaterfallRow } from './traceWaterfallRows'
 import type { Span } from './types'
 
 interface TraceWaterfallViewProps {
@@ -100,7 +101,13 @@ const TREE_COLOR = 'var(--border-bold)'
 // Extend vertical lines well beyond row edges to eliminate subpixel gaps between siblings
 const TREE_OVERFLOW = 2
 
-function TreeIndent({ node }: { node: SpanNode }): JSX.Element | null {
+function TreeIndent({
+    node,
+    isLastChild = node.isLastChild,
+}: {
+    node: SpanNode
+    isLastChild?: boolean
+}): JSX.Element | null {
     if (node.depth === 0) {
         return null
     }
@@ -146,7 +153,7 @@ function TreeIndent({ node }: { node: SpanNode }): JSX.Element | null {
                     style={{
                         left: mid - TREE_LINE_W / 2,
                         top: -TREE_OVERFLOW,
-                        bottom: node.isLastChild ? '50%' : -TREE_OVERFLOW,
+                        bottom: isLastChild ? '50%' : -TREE_OVERFLOW,
                         width: TREE_LINE_W,
                         backgroundColor: TREE_COLOR,
                     }}
@@ -169,7 +176,7 @@ function TreeIndent({ node }: { node: SpanNode }): JSX.Element | null {
 }
 
 interface WaterfallRowData {
-    flatSpans: SpanNode[]
+    rows: WaterfallRow[]
     traceStartUs: number
     traceDurationUs: number
     serviceColorMap: Map<string, number>
@@ -179,11 +186,16 @@ interface WaterfallRowData {
     onSelect: (spanId: string) => void
     collapsedSpanIds: Set<string>
     onToggleCollapse: (spanId: string) => void
+    openRunIds: Set<string>
+    /** A run is identified by the span_id of its first span. */
+    onSetRunOpen: (firstSpanId: string, isOpen: boolean) => void
     highlightedOperationKey: string | null
     dynamicRowHeight: ReturnType<typeof useDynamicRowHeight>
 }
 
-function WaterfallRow({
+type RunRow = Extract<WaterfallRow, { kind: 'run' }>
+
+function WaterfallSpanRow({
     node,
     traceStartUs,
     traceDurationUs,
@@ -194,8 +206,14 @@ function WaterfallRow({
     onSelect,
     collapsedSpanIds,
     onToggleCollapse,
+    onSetRunOpen,
     highlightedOperationKey,
-}: Omit<WaterfallRowData, 'flatSpans' | 'dynamicRowHeight'> & { node: SpanNode }): JSX.Element {
+    foldableRunLength,
+}: Omit<WaterfallRowData, 'rows' | 'openRunIds' | 'dynamicRowHeight'> & {
+    node: SpanNode
+    /** Set on the first span of a run that the user opened, so the row can fold the run back. */
+    foldableRunLength?: number
+}): JSX.Element {
     const { span, isMissingParent = false } = node
     const hasChildren = node.children.length > 0
     const isCollapsed = collapsedSpanIds.has(span.span_id)
@@ -218,6 +236,26 @@ function WaterfallRow({
     // Select by span_id (the OTel id the tree is keyed by, and what the inspector/URL resolve),
     // not the ClickHouse row uuid.
     const isSelected = selectedSpanId === span.span_id
+    const foldLabel =
+        foldableRunLength != null ? `Fold ${humanFriendlyNumber(foldableRunLength)} ${span.name} spans` : null
+    const foldControl = foldLabel != null && (
+        <Tooltip title={foldLabel}>
+            <button
+                type="button"
+                className="flex items-center justify-center w-4 h-4 rounded text-muted hover:text-default hover:bg-fill-button-tertiary-hover"
+                aria-label={foldLabel}
+                aria-expanded
+                // pinned: data-attr value, because renaming it breaks autocapture dashboards and Playwright selectors
+                data-attr="tracing-waterfall-fold-run"
+                onClick={(e) => {
+                    e.stopPropagation()
+                    onSetRunOpen(span.span_id, false)
+                }}
+            >
+                <IconChevronRight className="rotate-90" fontSize={14} />
+            </button>
+        </Tooltip>
+    )
     return (
         <div>
             <div
@@ -235,6 +273,11 @@ function WaterfallRow({
                 aria-pressed={isSelected}
                 onClick={() => onSelect(span.span_id)}
                 onKeyDown={(e) => {
+                    // A toggle inside the row handles its own keys. Without this check, Enter on the
+                    // toggle bubbles here and selects the row instead of activating the toggle.
+                    if (e.target !== e.currentTarget) {
+                        return
+                    }
                     if (e.key === 'Enter' || e.key === ' ') {
                         e.preventDefault()
                         onSelect(span.span_id)
@@ -249,7 +292,7 @@ function WaterfallRow({
                 >
                     <TreeIndent node={node} />
                     <span className="shrink-0 flex items-center justify-center w-4 self-stretch">
-                        {hasChildren && (
+                        {hasChildren ? (
                             <Tooltip title={isCollapsed ? 'Expand child spans' : 'Collapse child spans'}>
                                 <button
                                     type="button"
@@ -267,6 +310,8 @@ function WaterfallRow({
                                     />
                                 </button>
                             </Tooltip>
+                        ) : (
+                            foldControl
                         )}
                     </span>
                     {isError && (
@@ -290,6 +335,8 @@ function WaterfallRow({
                             </span>
                         </Tooltip>
                     )}
+                    {/* The chevron slot already holds the collapse toggle, so the fold control moves to the end. */}
+                    {hasChildren && foldControl && <span className="shrink-0 ml-auto pl-1">{foldControl}</span>}
                 </div>
 
                 {/* Timeline column */}
@@ -349,11 +396,151 @@ function WaterfallRow({
     )
 }
 
+function WaterfallRunRow({
+    row,
+    traceStartUs,
+    traceDurationUs,
+    serviceColorMap,
+    ticks,
+    labelColumnWidth,
+    onSetRunOpen,
+    highlightedOperationKey,
+}: Pick<
+    WaterfallRowData,
+    | 'traceStartUs'
+    | 'traceDurationUs'
+    | 'serviceColorMap'
+    | 'ticks'
+    | 'labelColumnWidth'
+    | 'onSetRunOpen'
+    | 'highlightedOperationKey'
+> & { row: RunRow }): JSX.Element {
+    const first = row.nodes[0]
+    const { span } = first
+    // A run can hold thousands of spans and the drawer re-renders on every resize drag. The row object
+    // stays the same until the rows rebuild, so this pass over the members runs once per run.
+    const { startUs, endUs, totalDurationNano, errorCount, anyMatched } = useMemo(
+        () => ({
+            ...runTimeRange(row),
+            errorCount: row.nodes.filter((node) => node.span.status_code === 2).length,
+            anyMatched: row.nodes.some((node) => node.span.matched_filter),
+        }),
+        [row]
+    )
+    const countText = humanFriendlyNumber(row.nodes.length)
+    const label = `${span.name} \u00D7${countText}`
+    const durationText = formatDuration(totalDurationNano)
+    const leftPct = traceDurationUs > 0 ? Math.max(((startUs - traceStartUs) / traceDurationUs) * 100, 0) : 0
+    const rawWidthPct = traceDurationUs > 0 ? ((endUs - startUs) / traceDurationUs) * 100 : 100
+    const widthPct = Math.max(Math.min(rawWidthPct, 100 - leftPct), 0.3)
+    const isError = errorCount > 0
+    const isDimmed = highlightedOperationKey != null ? row.key !== highlightedOperationKey : !anyMatched
+    const seriesColor = isError ? ERROR_COLOR : getSeriesColor(serviceColorMap.get(span.service_name) ?? 0)
+    const barColor = isDimmed ? 'var(--border)' : seriesColor
+
+    return (
+        <button
+            type="button"
+            className="flex items-stretch w-full text-left cursor-pointer transition-colors border-l-[3px] border-l-transparent hover:bg-surface-primary-hover"
+            // eslint-disable-next-line react/forbid-dom-props
+            style={{ minHeight: ROW_HEIGHT }}
+            aria-expanded={false}
+            aria-label={`Expand ${countText} ${span.name} spans`}
+            // pinned: data-attr value, because renaming it breaks autocapture dashboards and Playwright selectors
+            data-attr="tracing-waterfall-expand-run"
+            onClick={() => onSetRunOpen(span.span_id, true)}
+        >
+            {/* Label column */}
+            <span
+                className="shrink-0 flex items-center overflow-hidden border-r border-border px-2"
+                // eslint-disable-next-line react/forbid-dom-props
+                style={{ width: labelColumnWidth }}
+            >
+                {/* The run stands for all of its spans, so its branch line ends only when its last span is the last sibling. */}
+                <TreeIndent node={first} isLastChild={row.nodes[row.nodes.length - 1].isLastChild} />
+                <span className="shrink-0 flex items-center justify-center w-4 self-stretch text-muted">
+                    <IconChevronRight fontSize={14} />
+                </span>
+                {isError && (
+                    <Tooltip
+                        title={
+                            errorCount === 1
+                                ? '1 of these spans has an error status'
+                                : `${humanFriendlyNumber(errorCount)} of these spans have an error status`
+                        }
+                    >
+                        <IconWarning className="text-danger shrink-0 mr-1" fontSize={14} />
+                    </Tooltip>
+                )}
+                <span
+                    className={cn(
+                        'text-xs truncate',
+                        isError ? 'text-danger font-semibold' : 'font-medium',
+                        isDimmed && 'opacity-40'
+                    )}
+                    translate="no"
+                >
+                    {label}
+                </span>
+            </span>
+
+            {/* Timeline column */}
+            <span
+                className="relative grow self-center"
+                // eslint-disable-next-line react/forbid-dom-props
+                style={{ height: ROW_HEIGHT - 8 }}
+            >
+                {ticks.map((tickUs) => (
+                    <span
+                        key={tickUs}
+                        className="absolute top-0 bottom-0 border-l border-border"
+                        // eslint-disable-next-line react/forbid-dom-props
+                        style={{ left: `${(tickUs / traceDurationUs) * 100}%` }}
+                    />
+                ))}
+                <Tooltip
+                    title={
+                        <span>
+                            <strong translate="no">{label}</strong>
+                            <br />
+                            <span translate="no">{span.service_name}</span> · <span translate="no">{countText}</span>{' '}
+                            spans · <span translate="no">{durationText}</span> in total
+                            <br />
+                            <span translate="no">{`+${formatDuration((startUs - traceStartUs) * 1_000)}`}</span> to{' '}
+                            <span translate="no">{`+${formatDuration((endUs - traceStartUs) * 1_000)}`}</span> from the
+                            trace start
+                        </span>
+                    }
+                >
+                    <span
+                        className="absolute h-full flex items-center px-1.5 overflow-hidden"
+                        // eslint-disable-next-line react/forbid-dom-props
+                        style={{
+                            left: `${leftPct}%`,
+                            width: `${widthPct}%`,
+                            minWidth: 2,
+                            backgroundColor: `color-mix(in srgb, ${barColor} 20%, transparent)`,
+                            borderLeft: `1px solid ${barColor}`,
+                        }}
+                    >
+                        <span className={cn('text-[11px] truncate text-muted', isDimmed && 'opacity-40')}>
+                            <span className="text-muted-alt font-medium" translate="no">
+                                {span.service_name}
+                            </span>{' '}
+                            · <span translate="no">{countText}</span> spans · <span translate="no">{durationText}</span>
+                        </span>
+                    </span>
+                </Tooltip>
+            </span>
+        </button>
+    )
+}
+
 function WaterfallListRow({
     ariaAttributes,
     index,
     style,
-    flatSpans,
+    rows,
     traceStartUs,
     traceDurationUs,
     serviceColorMap,
@@ -363,6 +550,8 @@ function WaterfallListRow({
     onSelect,
     collapsedSpanIds,
     onToggleCollapse,
+    openRunIds,
+    onSetRunOpen,
     highlightedOperationKey,
     dynamicRowHeight,
 }: {
@@ -371,7 +560,7 @@ function WaterfallListRow({
     style: CSSProperties
 } & WaterfallRowData): JSX.Element {
     const rowRef = useRef<HTMLDivElement>(null)
-    const node = flatSpans[index]
+    const row = rows[index]
 
     useEffect(() => {
         if (rowRef.current) {
@@ -380,21 +569,44 @@ function WaterfallListRow({
     }, [dynamicRowHeight])
 
     return (
-        // eslint-disable-next-line react/forbid-dom-props
-        <div {...ariaAttributes} ref={rowRef} style={style} data-index={index} data-row-key={node.span.uuid}>
-            <WaterfallRow
-                node={node}
-                traceStartUs={traceStartUs}
-                traceDurationUs={traceDurationUs}
-                serviceColorMap={serviceColorMap}
-                ticks={ticks}
-                labelColumnWidth={labelColumnWidth}
-                selectedSpanId={selectedSpanId}
-                onSelect={onSelect}
-                collapsedSpanIds={collapsedSpanIds}
-                onToggleCollapse={onToggleCollapse}
-                highlightedOperationKey={highlightedOperationKey}
-            />
+        <div
+            {...ariaAttributes}
+            ref={rowRef}
+            // eslint-disable-next-line react/forbid-dom-props
+            style={style}
+            data-index={index}
+            data-row-key={row.kind === 'span' ? row.node.span.uuid : `run-${row.nodes[0].span.uuid}`}
+        >
+            {row.kind === 'run' ? (
+                <WaterfallRunRow
+                    row={row}
+                    traceStartUs={traceStartUs}
+                    traceDurationUs={traceDurationUs}
+                    serviceColorMap={serviceColorMap}
+                    ticks={ticks}
+                    labelColumnWidth={labelColumnWidth}
+                    onSetRunOpen={onSetRunOpen}
+                    highlightedOperationKey={highlightedOperationKey}
+                />
+            ) : (
+                <WaterfallSpanRow
+                    node={row.node}
+                    traceStartUs={traceStartUs}
+                    traceDurationUs={traceDurationUs}
+                    serviceColorMap={serviceColorMap}
+                    ticks={ticks}
+                    labelColumnWidth={labelColumnWidth}
+                    selectedSpanId={selectedSpanId}
+                    onSelect={onSelect}
+                    collapsedSpanIds={collapsedSpanIds}
+                    onToggleCollapse={onToggleCollapse}
+                    onSetRunOpen={onSetRunOpen}
+                    highlightedOperationKey={highlightedOperationKey}
+                    // A run that holds the selected span stays open whatever openRunIds says, so a fold
+                    // control on a run that only the selection opened would do nothing.
+                    foldableRunLength={openRunIds.has(row.node.span.span_id) ? row.openRunLength : undefined}
+                />
+            )}
         </div>
     )
 }
@@ -422,9 +634,13 @@ export function TraceWaterfallView({
         }
     }, [])
     const [collapsedSpanIds, setCollapsedSpanIds] = useState<Set<string>>(() => new Set())
+    const [openRunIds, setOpenRunIds] = useState<Set<string>>(() => new Set())
     const serviceColorMap = useMemo(() => buildServiceColorMap(spans), [spans])
     const tree = useMemo(() => buildSpanTree(spans), [spans])
-    const flatSpans = useMemo(() => flattenTree(tree, collapsedSpanIds), [tree, collapsedSpanIds])
+    const rows = useMemo(
+        () => buildWaterfallRows(tree, collapsedSpanIds, openRunIds, selectedSpanId),
+        [tree, collapsedSpanIds, openRunIds, selectedSpanId]
+    )
     const collapsibleSpanIds = useMemo(() => collectCollapsibleSpanIds(tree), [tree])
     const allCollapsed = collapsibleSpanIds.size > 0 && collapsedSpanIds.size >= collapsibleSpanIds.size
     const dynamicRowHeight = useDynamicRowHeight({ defaultRowHeight: ROW_HEIGHT })
@@ -441,6 +657,21 @@ export function TraceWaterfallView({
         })
     }, [])
 
+    const handleSetRunOpen = useCallback((firstSpanId: string, isOpen: boolean): void => {
+        setOpenRunIds((prev) => {
+            if (prev.has(firstSpanId) === isOpen) {
+                return prev
+            }
+            const next = new Set(prev)
+            if (isOpen) {
+                next.add(firstSpanId)
+            } else {
+                next.delete(firstSpanId)
+            }
+            return next
+        })
+    }, [])
+
     const handleToggleCollapseAll = useCallback((): void => {
         setCollapsedSpanIds((prev) => (prev.size >= collapsibleSpanIds.size ? new Set() : new Set(collapsibleSpanIds)))
     }, [collapsibleSpanIds])
@@ -449,7 +680,9 @@ export function TraceWaterfallView({
     // Infinite scroll: fetch the next page once the rendered window nears the end of the loaded spans.
     // Tracks the span count we last paged against so the trigger fires at most once per loaded count —
     // without this, a page that returns no new rows (dupes / end of data) leaves the window pinned at
-    // the bottom and the trigger spins on every render, pegging the CPU.
+    // the bottom and the trigger spins on every render, pegging the CPU. The guard counts spans, not
+    // rows, because a page whose spans all fold into an existing run adds no row, and a row-count guard
+    // would then stop paging for good.
     const lastRequestedSpanCountRef = useRef(-1)
     const handleRowsRendered = useCallback(
         (
@@ -459,16 +692,16 @@ export function TraceWaterfallView({
             if (!onLoadMore || !hasMore || loadingMore) {
                 return
             }
-            if (allRows.stopIndex < flatSpans.length - 1 - LOAD_MORE_THRESHOLD) {
+            if (allRows.stopIndex < rows.length - 1 - LOAD_MORE_THRESHOLD) {
                 return
             }
-            if (lastRequestedSpanCountRef.current === flatSpans.length) {
+            if (lastRequestedSpanCountRef.current === spans.length) {
                 return
             }
-            lastRequestedSpanCountRef.current = flatSpans.length
+            lastRequestedSpanCountRef.current = spans.length
             onLoadMore()
         },
-        [onLoadMore, hasMore, loadingMore, flatSpans.length]
+        [onLoadMore, hasMore, loadingMore, rows.length, spans.length]
     )
 
     // Deep links land with a span anchor — scroll it into view once the tree is built. The anchor
@@ -478,15 +711,15 @@ export function TraceWaterfallView({
     const initialSpanRef = useRef(selectedSpanId)
     const scrolledToInitialRef = useRef(false)
     useEffect(() => {
-        if (scrolledToInitialRef.current || !initialSpanRef.current || flatSpans.length === 0) {
+        if (scrolledToInitialRef.current || !initialSpanRef.current || rows.length === 0) {
             return
         }
-        const index = flatSpans.findIndex((node) => node.span.span_id === initialSpanRef.current)
+        const index = rows.findIndex((row) => rowKey(row) === initialSpanRef.current)
         if (index >= 0) {
             listRef.current?.scrollToRow({ index, align: 'center' })
             scrolledToInitialRef.current = true
         }
-    }, [flatSpans, listRef])
+    }, [rows, listRef])
 
     // The first span of a large operation often sits far down the tree, so a click on the operations
     // table must scroll that span into view. The `smart` alignment keeps the list still when that span
@@ -502,12 +735,12 @@ export function TraceWaterfallView({
         if (lastScrolledOperationKeyRef.current === highlightedOperationKey) {
             return
         }
-        const index = flatSpans.findIndex((node) => compareRowKey(node.span) === highlightedOperationKey)
+        const index = rows.findIndex((row) => rowOperationKey(row) === highlightedOperationKey)
         if (index >= 0) {
             listRef.current?.scrollToRow({ index, align: 'smart' })
             lastScrolledOperationKeyRef.current = highlightedOperationKey
         }
-    }, [highlightedOperationKey, flatSpans, listRef])
+    }, [highlightedOperationKey, rows, listRef])
 
     // Controlled: emit the new selection (toggling off if the same span is clicked) and let the
     // scene flow it back via `selectedSpanId`. No internal copy, so highlight can't drift from the URL.
@@ -725,15 +958,15 @@ export function TraceWaterfallView({
                 renderProp={({ width }: SizeProps) => (
                     <List<WaterfallRowData>
                         style={{
-                            height: Math.min(flatSpans.length * ROW_HEIGHT, MAX_WATERFALL_HEIGHT),
+                            height: Math.min(rows.length * ROW_HEIGHT, MAX_WATERFALL_HEIGHT),
                             width,
                         }}
                         overscanCount={10}
-                        rowCount={flatSpans.length}
+                        rowCount={rows.length}
                         rowHeight={dynamicRowHeight}
                         rowComponent={WaterfallListRow}
                         rowProps={{
-                            flatSpans,
+                            rows,
                             traceStartUs,
                             traceDurationUs,
                             serviceColorMap,
@@ -743,6 +976,8 @@ export function TraceWaterfallView({
                             onSelect: handleSelect,
                             collapsedSpanIds,
                             onToggleCollapse: handleToggleCollapse,
+                            openRunIds,
+                            onSetRunOpen: handleSetRunOpen,
                             highlightedOperationKey,
                             dynamicRowHeight,
                         }}

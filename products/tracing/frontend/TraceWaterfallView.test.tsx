@@ -41,6 +41,15 @@ const child = makeSpan({
     parent_span_id: 'span-root',
     name: 'child-operation',
 })
+const cacheReads = [1, 2, 3].map((offsetMs) =>
+    makeSpan({
+        uuid: `uuid-cache-${offsetMs}`,
+        span_id: `span-cache-${offsetMs}`,
+        parent_span_id: 'span-root',
+        name: 'cache GET',
+        timestamp: `2026-06-11T08:00:00.00${offsetMs}Z`,
+    })
+)
 
 describe('TraceWaterfallView', () => {
     // Scope to the render's own container (no auto-cleanup here, and the name renders in both the
@@ -119,6 +128,51 @@ describe('TraceWaterfallView', () => {
             expect(label('child-operation').className).not.toContain('opacity-40')
         }
     )
+
+    // A loop of identical calls must not push the rest of the trace out of view, and opening the folded
+    // row must not double as selecting a span, which would open the inspector on a span nobody picked.
+    it('folds three adjacent siblings into one run row that expands on click without selecting a span', () => {
+        const onSpanSelect = jest.fn()
+        const { container } = render(<TraceWaterfallView spans={[root, ...cacheReads]} onSpanSelect={onSpanSelect} />)
+
+        expect(within(container).queryByText('cache GET')).toBeNull()
+        fireEvent.click(within(container).getByText('cache GET \u00D73'))
+
+        expect(within(container).getAllByText('cache GET')).toHaveLength(3)
+        expect(onSpanSelect).not.toHaveBeenCalled()
+
+        fireEvent.click(within(container).getByLabelText('Fold 3 cache GET spans'))
+
+        expect(within(container).getByText('cache GET \u00D73')).toBeTruthy()
+        expect(within(container).queryByText('cache GET')).toBeNull()
+        expect(onSpanSelect).not.toHaveBeenCalled()
+    })
+
+    // A folded run is the only row left for its operation, so a run row that ignores the highlight
+    // leaves the operation the user picked in the operations table dim, or lights up the wrong one.
+    it.each([
+        ['root', compareRowKey(root), true],
+        ['run', compareRowKey(cacheReads[0]), false],
+    ])(
+        'with the %s operation highlighted, dims a run outside the highlighted operation and keeps a matching run bright',
+        (_name, highlightedOperationKey, isDimmed) => {
+            const { container } = render(
+                <TraceWaterfallView spans={[root, ...cacheReads]} highlightedOperationKey={highlightedOperationKey} />
+            )
+
+            expect(within(container).getByText('cache GET \u00D73').className.includes('opacity-40')).toBe(isDimmed)
+        }
+    )
+
+    // A deep link to a span inside a run must land on that span's own row and not on a folded row that
+    // hides it. The selection alone holds the run open, so a fold control there would do nothing.
+    it('opens the run that holds the selected span', () => {
+        const { container } = render(<TraceWaterfallView spans={[root, ...cacheReads]} selectedSpanId="span-cache-2" />)
+
+        expect(within(container).getAllByText('cache GET')).toHaveLength(3)
+        expect(within(container).queryByText('cache GET \u00D73')).toBeNull()
+        expect(within(container).queryByLabelText('Fold 3 cache GET spans')).toBeNull()
+    })
 
     it('does not render a collapse toggle for leaf spans', () => {
         const { container } = render(<TraceWaterfallView spans={[root]} />)
