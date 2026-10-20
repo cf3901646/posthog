@@ -576,7 +576,7 @@ def sync_execute(
         **core_settings,
         "log_comment": query_log_tags.to_json(),
     }
-    if workload == Workload.OFFLINE or ch_user == ClickHouseUser.CACHE_WARMUP:
+    if workload == Workload.OFFLINE or ch_user in (ClickHouseUser.CACHE_WARMUP, ClickHouseUser.EXPERIMENTS):
         # disabling hedged requests for offline queries reduces the likelihood of these queries bleeding over into the
         # online resource pool when the offline resource pool is under heavy load. this comes at the cost of higher and
         # more variable latency and a higher likelihood of query failures - but offline workloads should be tolerant to

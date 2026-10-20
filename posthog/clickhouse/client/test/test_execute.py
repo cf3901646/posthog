@@ -120,22 +120,32 @@ def test_llm_analytics_ch_user_routing(client_from_pool, product, kind, tag_id, 
 
 
 @pytest.mark.parametrize(
-    "tagged_ch_user,feature,requested_ch_user,expected_ch_user",
+    "tagged_ch_user,feature,requested_ch_user,expected_ch_user,expected_hedged",
     [
-        (ClickHouseUser.ALERTS_PLATFORM_INSIGHT, None, ClickHouseUser.DEFAULT, ClickHouseUser.ALERTS_PLATFORM_INSIGHT),
-        (None, None, ClickHouseUser.DEFAULT, ClickHouseUser.DEFAULT),
-        (ClickHouseUser.ALERTS_PLATFORM_INSIGHT, None, ClickHouseUser.META, ClickHouseUser.META),
-        (ClickHouseUser.EXPERIMENTS, Feature.CACHE_WARMUP, ClickHouseUser.DEFAULT, ClickHouseUser.EXPERIMENTS),
-        (None, Feature.CACHE_WARMUP, ClickHouseUser.DEFAULT, ClickHouseUser.CACHE_WARMUP),
+        (
+            ClickHouseUser.ALERTS_PLATFORM_INSIGHT,
+            None,
+            ClickHouseUser.DEFAULT,
+            ClickHouseUser.ALERTS_PLATFORM_INSIGHT,
+            None,
+        ),
+        (None, None, ClickHouseUser.DEFAULT, ClickHouseUser.DEFAULT, None),
+        (ClickHouseUser.ALERTS_PLATFORM_INSIGHT, None, ClickHouseUser.META, ClickHouseUser.META, None),
+        (ClickHouseUser.EXPERIMENTS, Feature.CACHE_WARMUP, ClickHouseUser.DEFAULT, ClickHouseUser.EXPERIMENTS, "0"),
+        (None, Feature.CACHE_WARMUP, ClickHouseUser.DEFAULT, ClickHouseUser.CACHE_WARMUP, "0"),
     ],
 )
-def test_tagged_ch_user_routing(client_from_pool, tagged_ch_user, feature, requested_ch_user, expected_ch_user):
+def test_tagged_ch_user_routing(
+    client_from_pool, tagged_ch_user, feature, requested_ch_user, expected_ch_user, expected_hedged
+):
     with tags_context(
         product=Product.PRODUCT_ANALYTICS, feature=feature, kind="temporal", id="alerts", ch_user=tagged_ch_user
     ):
-        sync_execute("SELECT 1", flush=False, ch_user=requested_ch_user)
+        sync_execute("SELECT 1", flush=False, workload=Workload.ONLINE, ch_user=requested_ch_user)
 
     assert client_from_pool.call_args[0][3] == expected_ch_user
+    client = client_from_pool.return_value.__enter__.return_value
+    assert client.execute.call_args.kwargs["settings"].get("use_hedged_requests") == expected_hedged
 
 
 @pytest.mark.parametrize(
