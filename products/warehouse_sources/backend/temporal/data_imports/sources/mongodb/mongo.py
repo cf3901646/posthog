@@ -686,12 +686,18 @@ def _estimate_rows_to_sync(collection: Collection, query: dict[str, Any], logger
 def _serves_range_and_sort(spec: dict[str, Any], incremental_field: str) -> bool:
     """Whether the planner can serve `field > x` ordered by `field` from this index.
 
-    A hashed, text or geo index serves neither the range nor the sort, and a partial index serves
-    them only for a query that implies its filter, which the cap query does not. The field has to
-    come first: a compound index that only holds it later cannot order by it on its own.
+    A hashed, text or geo index serves neither the range nor the sort, a partial index serves them
+    only for a query that implies its filter, which the cap query does not, and the planner ignores
+    a hidden index entirely. The field has to come first: a compound index that only holds it later
+    cannot order by it on its own.
     """
     field, direction = spec["key"][0]
-    return field == incremental_field and direction in (ASCENDING, DESCENDING) and "partialFilterExpression" not in spec
+    return (
+        field == incremental_field
+        and direction in (ASCENDING, DESCENDING)
+        and "partialFilterExpression" not in spec
+        and not spec.get("hidden")
+    )
 
 
 def _read_upper_bound(

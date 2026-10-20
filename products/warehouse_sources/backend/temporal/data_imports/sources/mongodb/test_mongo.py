@@ -1176,6 +1176,7 @@ class TestMongoSourceResume(SimpleTestCase):
                 {"_id_1": {"key": [("_id", 1)], "partialFilterExpression": {"active": True}}},
                 False,
             ),
+            ("hidden_index", {"_id_1": {"key": [("_id", 1)], "hidden": True}}, False),
             ("compound_index_on_another_field_first", {"other_1__id_1": {"key": [("other", 1), ("_id", 1)]}}, False),
             ("not_indexed", {}, False),
         ]
