@@ -407,11 +407,13 @@ def clerk_source(
 
     gated_feature = endpoint_config.gated_feature
 
-    def items() -> Iterator[Any]:
-        if gated_feature is None:
-            yield from resource
-            return
+    def gated_items() -> Iterator[Any]:
+        assert gated_feature is not None
         yield from _skip_when_feature_disabled(iter(resource), endpoint, gated_feature, logger)
+
+    # The pipeline gets the resource itself when nothing wraps it, so the framework stages a page's
+    # resume state before the page is yielded and a hand-off keeps the rows it still buffers.
+    items = (lambda: resource) if gated_feature is None else gated_items
 
     if endpoint_config.partition_key is None:
         return SourceResponse(
