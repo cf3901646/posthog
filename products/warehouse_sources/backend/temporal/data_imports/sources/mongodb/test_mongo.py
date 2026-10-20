@@ -821,6 +821,7 @@ def _read_rows(
     *,
     resumable_source_manager: Any = None,
     should_use_incremental_field: bool = False,
+    db_incremental_field_last_value: Any = None,
     on_row: Callable[[dict[str, Any]], None] | None = None,
 ) -> tuple[Any, list[dict[str, Any]]]:
     @contextlib.contextmanager
@@ -840,7 +841,7 @@ def _read_rows(
             logger=MagicMock(),
             team_id=1,
             should_use_incremental_field=should_use_incremental_field,
-            db_incremental_field_last_value=None,
+            db_incremental_field_last_value=db_incremental_field_last_value,
             incremental_field="_id" if should_use_incremental_field else None,
             incremental_field_type=IncrementalFieldType.ObjectID if should_use_incremental_field else None,
             resumable_source_manager=resumable_source_manager,
@@ -1117,16 +1118,36 @@ class TestMongoSourceResume(SimpleTestCase):
         assert [row["_id"] for row in rows] == [str(doc["_id"]) for doc in docs]
         assert collection.find_queries[1] == {"$and": [_id_seek_filter(saved_id), {"_id": {"$gt": docs[1]["_id"]}}]}
 
-    def test_incremental_run_does_not_resume(self) -> None:
+    def test_incremental_run_with_a_watermark_does_not_resume(self) -> None:
         collection = _FakeCollection([{"_id": ObjectId("65f1c2a4e4b0a1b2c3d4e5f6")}])
         manager = _FakeResumeManager(_saved_state(ObjectId("65f1c2a4e4b0a1b2c3d4e5f0")))
 
-        response, rows = _read_rows(collection, resumable_source_manager=manager, should_use_incremental_field=True)
+        response, rows = _read_rows(
+            collection,
+            resumable_source_manager=manager,
+            should_use_incremental_field=True,
+            db_incremental_field_last_value=ObjectId("65f1c2a4e4b0a1b2c3d4e5e0"),
+        )
 
         assert len(rows) == 1
         assert response.supports_resume is False
         assert "$or" not in collection.find_queries[0]
         assert (manager.load_calls, manager.staged, manager.clear_calls) == (0, [], 0)
+
+    def test_first_incremental_sync_resumes_inside_its_incremental_filter(self) -> None:
+        saved_id = ObjectId("65f1c2a4e4b0a1b2c3d4e5f0")
+        next_id = ObjectId("65f1c2a4e4b0a1b2c3d4e5f6")
+        collection = _FakeCollection([{"_id": next_id}])
+        manager = _FakeResumeManager(_saved_state(saved_id))
+
+        response, rows = _read_rows(collection, resumable_source_manager=manager, should_use_incremental_field=True)
+
+        assert [row["_id"] for row in rows] == [str(next_id)]
+        assert response.supports_resume is True
+        incremental_filter, seek = collection.find_queries[0]["$and"]
+        assert incremental_filter == _build_query(True, "_id", IncrementalFieldType.ObjectID, None)
+        assert seek == _id_seek_filter(saved_id)
+        assert [decode_resume_id(state.last_id) for state in manager.staged] == [next_id]
 
     def test_id_without_a_checkpoint_clears_the_state_once_per_run_of_such_ids(self) -> None:
         collection = _FakeCollection([{"_id": None}, {"_id": float("nan")}, {"_id": 1}, {"_id": MaxKey()}])

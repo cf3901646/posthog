@@ -874,11 +874,12 @@ def mongo_source(
 ) -> SourceResponse:
     connection_params = _parse_connection_string(connection_string, database_name)
 
-    # Only a full refresh resumes. Its read is `find({}).sort(_id)` with no filter, so every document
-    # that sorts before the checkpoint was already handed on. An incremental or append read restarts
-    # from its incremental watermark instead, and an `_id` seek would have to agree with a filter on
-    # another field.
-    resume_manager = None if should_use_incremental_field else resumable_source_manager
+    # The read is sorted by `_id`, so every document before the checkpoint was already handed on as
+    # long as the filter is the same on every attempt. A full refresh has no filter. A first
+    # incremental or append sync filters on the initial watermark, which no attempt moves. A later
+    # incremental read restarts from its stored watermark instead.
+    resumes_by_id = not should_use_incremental_field or db_incremental_field_last_value is None
+    resume_manager = resumable_source_manager if resumes_by_id else None
 
     if not connection_params["database"]:
         raise ValueError(DATABASE_NAME_REQUIRED_ERROR)
@@ -926,7 +927,8 @@ def mongo_source(
                 if state is not None:
                     try:
                         resume_after = decode_resume_id(state.last_id)
-                        query = _id_seek_filter(resume_after)
+                        seek = _id_seek_filter(resume_after)
+                        query = {"$and": [query, seek]} if query else seek
                     except Exception:
                         # This attempt already counts as a resume, so it cannot fall back to a
                         # fresh read. Clearing the state lets the next attempt start one.
