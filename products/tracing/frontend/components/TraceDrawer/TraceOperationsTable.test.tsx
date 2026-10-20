@@ -34,7 +34,8 @@ describe('TraceOperationsTable', () => {
                 onHighlightOperation={onHighlightOperation}
             />
         )
-        const ordersButton = (): HTMLElement => screen.getByRole('button', { name: /POST \/api\/orders/ })
+        // Text query, not a role query: role queries walk the whole DOM and are slow in jsdom.
+        const ordersButton = (): HTMLElement => screen.getByText('POST /api/orders').closest('button') as HTMLElement
         expect(ordersButton().getAttribute('aria-pressed')).toBe('false')
 
         fireEvent.click(ordersButton())
@@ -57,7 +58,7 @@ describe('TraceOperationsTable', () => {
         const operations = Array.from({ length: 30 }, (_, index) =>
             makeOperation('catalog-api', `op-${index}`, (30 - index) * 1_000_000)
         )
-        render(
+        const { container } = render(
             <TraceOperationsTable
                 operations={operations}
                 highlightedOperationKey={null}
@@ -65,8 +66,10 @@ describe('TraceOperationsTable', () => {
             />
         )
 
-        expect(screen.getAllByRole('button', { name: /op-/ })).toHaveLength(MAX_OPERATIONS)
+        expect(container.querySelectorAll('button[data-attr="tracing-trace-operations-highlight"]')).toHaveLength(
+            MAX_OPERATIONS
+        )
         expect(screen.getByText('Showing the top 25 of 30 operations by total time.')).toBeTruthy()
-        expect(screen.queryByRole('button', { name: /op-29/ })).toBeNull()
+        expect(screen.queryByText('op-29')).toBeNull()
     })
 })
