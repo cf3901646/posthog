@@ -1131,6 +1131,7 @@ class TestMongoSourceResume(SimpleTestCase):
 
         assert len(rows) == 1
         assert response.supports_resume is False
+        assert response.sort_mode is None
         assert "$or" not in collection.find_queries[0]
         assert (manager.load_calls, manager.staged, manager.clear_calls) == (0, [], 0)
 
