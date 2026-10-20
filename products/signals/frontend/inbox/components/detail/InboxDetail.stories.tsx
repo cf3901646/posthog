@@ -379,7 +379,7 @@ export const PullRequestPlainTitle: Story = {
             [FEATURE_FLAGS.INBOX_REDESIGN]: true,
             [FEATURE_FLAGS.SIGNALS_REPORT_METRICS]: true,
             [FEATURE_FLAGS.SIGNALS_EXPECTED_IMPACT_DISPLAY]: true,
-            [FEATURE_FLAGS.SIGNALS_PLAIN_REPORT_TITLES]: true,
+            [FEATURE_FLAGS.SIGNALS_PLAIN_REPORT_TITLES]: 'test',
         },
     },
     render: () => (
