@@ -2750,6 +2750,11 @@ describe('runStreamLogic', () => {
 
             expect(logic.values.hasThreadItems).toBe(false)
             expect(logic.values.bootstrapLoading).toBe(false)
+            expect(api.tasks.runs.getLogEntries).toHaveBeenCalledWith(
+                'task-1',
+                'run-1',
+                expect.objectContaining({ view: 'thread' })
+            )
         })
 
         it('stores bootstrap errors for inline task-run error UI', async () => {

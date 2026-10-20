@@ -221,6 +221,7 @@ import type {
     GitHubReposResponseApi,
 } from 'products/integrations/frontend/generated/api.schemas'
 import type { LogExplanation } from 'products/logs/frontend/components/LogsViewer/LogDetailsModal/Tabs/ExploreWithAI/types'
+import type { TasksRunsLogsRetrieveParams } from 'products/logs/frontend/generated/api.schemas'
 import type { NotebookCollabCursorApi } from 'products/notebooks/frontend/generated/api.schemas'
 import type { Task, TaskListParams, TaskRun, TaskUpsertProps } from 'products/posthog_ai/frontend/types/taskTypes'
 import type {
@@ -5038,11 +5039,16 @@ const api = {
             async getLogEntries(
                 taskId: Task['id'],
                 runId: TaskRun['id'],
-                options: { signal?: AbortSignal; projectId?: TeamType['id'] } = {}
+                options: {
+                    signal?: AbortSignal
+                    projectId?: TeamType['id']
+                    view?: TasksRunsLogsRetrieveParams['view']
+                } = {}
             ): Promise<Record<string, any>[]> {
                 const response = await new ApiRequest()
                     .taskRun(taskId, runId, options.projectId)
                     .withAction('logs')
+                    .withQueryString(options.view ? { view: options.view } : undefined)
                     .getResponse({ signal: options.signal })
                 const text = await response.text()
                 const entries: Record<string, any>[] = []

@@ -56,6 +56,7 @@ import type {
     PatchedLogsSamplingRuleApi,
     PatchedLogsViewApi,
     PatchedTeamLogsConfigApi,
+    TasksRunsLogsRetrieveParams,
     TeamLogsConfigApi,
     _LogsAttributesResponseApi,
     _LogsCountRangesRequestApi,
@@ -1273,8 +1274,25 @@ export const logsViewsDestroy = async (projectId: string, shortId: string, optio
     })
 }
 
-export const getTasksRunsLogsRetrieveUrl = (projectId: string, taskId: string, id: string) => {
-    return `/api/projects/${projectId}/tasks/${taskId}/runs/${id}/logs/`
+export const getTasksRunsLogsRetrieveUrl = (
+    projectId: string,
+    taskId: string,
+    id: string,
+    params?: TasksRunsLogsRetrieveParams
+) => {
+    const normalizedParams = new URLSearchParams()
+
+    Object.entries(params || {}).forEach(([key, value]) => {
+        if (value !== undefined) {
+            normalizedParams.append(key, value === null ? 'null' : String(value))
+        }
+    })
+
+    const stringifiedParams = normalizedParams.toString()
+
+    return stringifiedParams.length > 0
+        ? `/api/projects/${projectId}/tasks/${taskId}/runs/${id}/logs/?${stringifiedParams}`
+        : `/api/projects/${projectId}/tasks/${taskId}/runs/${id}/logs/`
 }
 
 /**
@@ -1285,9 +1303,10 @@ export const tasksRunsLogsRetrieve = async (
     projectId: string,
     taskId: string,
     id: string,
+    params?: TasksRunsLogsRetrieveParams,
     options?: RequestInit
 ): Promise<void> => {
-    return apiMutator<void>(getTasksRunsLogsRetrieveUrl(projectId, taskId, id), {
+    return apiMutator<void>(getTasksRunsLogsRetrieveUrl(projectId, taskId, id, params), {
         ...options,
         method: 'GET',
     })

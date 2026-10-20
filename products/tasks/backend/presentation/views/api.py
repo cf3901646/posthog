@@ -201,6 +201,8 @@ from products.tasks.backend.presentation.serializers import (
     TaskRunLivingArtifactOpenResponseSerializer,
     TaskRunLivingArtifactResponseSerializer,
     TaskRunLivingArtifactsResponseSerializer,
+    TaskRunLogsQuerySerializer,
+    TaskRunLogsView,
     TaskRunPeerMessageRequestSerializer,
     TaskRunPeerMessageResponseSerializer,
     TaskRunPeersResponseSerializer,
@@ -3546,6 +3548,7 @@ class TaskRunViewSet(TeamAndOrgViewSetMixin, viewsets.GenericViewSet):
 
     @extend_schema(
         extensions={"x-product": "logs"},
+        parameters=[TaskRunLogsQuerySerializer],
         responses={
             200: OpenApiResponse(description="Log content in JSONL format"),
             404: OpenApiResponse(description="Task run not found"),
@@ -3562,12 +3565,17 @@ class TaskRunViewSet(TeamAndOrgViewSetMixin, viewsets.GenericViewSet):
     )
     @action(detail=True, methods=["get"], url_path="logs", required_scopes=["task:read"])
     def logs(self, request, pk=None, **kwargs):
+        query = TaskRunLogsQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
         task_id = self._ensure_task_accessible()
         timer = ServerTimingsGathered()
         with timer("s3_read"):
             log_content = tasks_facade.read_task_run_conversation_logs(pk, task_id, self.team_id)
         if log_content is None:
             raise NotFound()
+        if query.validated_data["view"] == TaskRunLogsView.THREAD:
+            with timer("thread_view"):
+                log_content = tasks_facade.thread_view_of_log_content(log_content)
 
         response = HttpResponse(log_content, content_type="application/jsonl")
         response["Cache-Control"] = "no-cache"

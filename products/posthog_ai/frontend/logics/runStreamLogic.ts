@@ -3898,6 +3898,7 @@ export const runStreamLogic = kea<runStreamLogicType>([
                     api.tasks.runs.getLogEntries(session.taskId, session.runId, {
                         signal,
                         projectId: session.projectId,
+                        view: 'thread',
                     })
                 )
             )
