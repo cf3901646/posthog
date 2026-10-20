@@ -106,6 +106,7 @@ async function loadSnapshotTools(): Promise<Tool<ZodObjectAny>[]> {
         'subscription-source-summaries': true,
         'workflows-data-suggestions': true,
         'workflows-mcp-onboarding': true,
+        'workflows-transactional-email-api': true,
     }
     return [...(await getToolsFromContext(createMockContext(), { featureFlags }))].sort((a, b) =>
         a.name.localeCompare(b.name)
