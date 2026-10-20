@@ -1,7 +1,7 @@
 import { useActions, useValues } from 'kea'
-import { useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 
-import { LemonBanner, LemonButton, LemonCollapse, LemonTag, SpinnerOverlay } from '@posthog/lemon-ui'
+import { LemonBanner, LemonButton, LemonTag, SpinnerOverlay } from '@posthog/lemon-ui'
 
 import { Resizer } from 'lib/components/Resizer/Resizer'
 import { type ResizerLogicProps, resizerLogic } from 'lib/components/Resizer/resizerLogic'
@@ -9,14 +9,12 @@ import { IconLink } from 'lib/lemon-ui/icons'
 import { LemonDrawer } from 'lib/lemon-ui/LemonDrawer/LemonDrawer'
 import { copyToClipboard } from 'lib/utils/copyToClipboard'
 import { cn } from 'lib/utils/css-classes'
-import { pluralize } from 'lib/utils/strings'
 
 import { buildAiEventSpans } from '../../aiEventSpans'
 import type { ErrorScope } from '../../errorCorrelation'
 import { useKeepMountedWhileOpen } from '../../hooks/useKeepMountedWhileOpen'
 import type { TraceIdentity } from '../../traceIdentity'
 import { absoluteTraceUrl } from '../../traceLinks'
-import { summarizeTraceOperations } from '../../traceOperations'
 import { buildServiceColorMap, formatDuration, TraceWaterfallView } from '../../TraceWaterfallView'
 import type { Span, SpanInspectorTab } from '../../types'
 import { SpanInspector } from '../SpanInspector/SpanInspector'
@@ -25,7 +23,6 @@ import { TraceAiEventsCapNotice } from './TraceAiEventsCapNotice'
 import { traceAiEventsLogic } from './traceAiEventsLogic'
 import { TraceIdentityChips } from './TraceIdentityChips'
 import { TraceLoadErrorNotice } from './TraceLoadErrorNotice'
-import { TraceOperationsTable } from './TraceOperationsTable'
 import { TraceUnavailableNotice } from './TraceUnavailableNotice'
 
 // Below this the inspector's content (the attribute KVP tables) stops being readable; clamp so a
@@ -66,9 +63,6 @@ export interface TraceDrawerProps {
     /** The operation whose spans the waterfall highlights (compareRowKey), held in tracingViewerLogic. */
     highlightedOperationKey: string | null
     onHighlightOperation: (operationKey: string | null) => void
-    /** The operations panel is open. Held in tracingViewerLogic so the choice sticks across traces. */
-    operationsPanelExpanded: boolean
-    onToggleOperationsPanel: (expanded: boolean) => void
     onClose: () => void
 }
 
@@ -98,8 +92,6 @@ export function TraceDrawer({
     onSelectSpan,
     highlightedOperationKey,
     onHighlightOperation,
-    operationsPanelExpanded,
-    onToggleOperationsPanel,
     onClose,
 }: TraceDrawerProps): JSX.Element | null {
     const { aiEvents, hasMoreAiEvents, aiEventsLimit, aiEventsResponseLoading, aiEventsLoadFailed } = useValues(
@@ -121,8 +113,17 @@ export function TraceDrawer({
         const aiEventSpans = buildAiEventSpans(aiEvents, realSpans)
         return aiEventSpans.length > 0 ? [...realSpans, ...aiEventSpans] : realSpans
     }, [realSpans, aiEvents])
-    // Real spans only, because AI event rows are synthetic and have no operation of their own.
-    const operationsSummary = useMemo(() => summarizeTraceOperations(realSpans), [realSpans])
+    // Real spans only, because AI event rows are synthetic and have no operation of their own. Without
+    // real spans the tab would only show an empty table, so the inspector leaves it out. One stable
+    // object, so a resize drag, which re-renders this component on every mousemove, does not hand the
+    // inspector new props for the tab.
+    const operations = useMemo(
+        () =>
+            realSpans.length > 0
+                ? { spans: realSpans, highlightedOperationKey, onHighlightOperation, partial: hasMoreSpans }
+                : undefined,
+        [realSpans, highlightedOperationKey, onHighlightOperation, hasMoreSpans]
+    )
     // Waterfall|inspector split. Persisted so a user's preferred split sticks across traces;
     // desiredSize is null until the first drag, leaving the responsive default (w-2/5) in place.
     // One props object feeds both the value-read and the <Resizer>, so the logicKey can't desync.
@@ -149,6 +150,14 @@ export function TraceDrawer({
                 : null,
         [spans, selectedSpanId, selectedSpan]
     )
+    // The Operations tab is the only place that explains a dimmed waterfall. The missing-parent notice
+    // replaces the whole inspector, tab included, so a highlight left in place would dim spans with
+    // nothing on screen to explain it.
+    useEffect(() => {
+        if (missingParentSpanId && highlightedOperationKey) {
+            onHighlightOperation(null)
+        }
+    }, [missingParentSpanId, highlightedOperationKey, onHighlightOperation])
     // Shared with the waterfall so a service is the same color in the bars and the summary header.
     const serviceColorMap = useMemo(() => buildServiceColorMap(spans), [spans])
 
@@ -210,39 +219,6 @@ export function TraceDrawer({
                             </LemonBanner>
                         )}
                         <TraceAiEventsCapNotice aiEvents={aiEvents} hasMore={hasMoreAiEvents} limit={aiEventsLimit} />
-                        {operationsSummary.spanCount > 0 && (
-                            <LemonCollapse
-                                size="small"
-                                className="mb-2"
-                                activeKey={operationsPanelExpanded ? 'operations' : null}
-                                onChange={(key) => onToggleOperationsPanel(key !== null)}
-                                panels={[
-                                    {
-                                        key: 'operations',
-                                        // pinned: autocapture selects on this value. LemonCollapse puts no
-                                        // data-attr on its root, so the toggle button carries it.
-                                        dataAttr: 'tracing-trace-operations',
-                                        header: (
-                                            <span className="flex items-center gap-2">
-                                                <span>Operations</span>
-                                                {/* The counts change as spans load, so they stay one text node that translation extensions skip. */}
-                                                <span className="text-xs text-muted" translate="no">
-                                                    {`${pluralize(operationsSummary.operations.length, 'operation')} · ${pluralize(operationsSummary.spanCount, 'span')}`}
-                                                </span>
-                                            </span>
-                                        ),
-                                        content: (
-                                            <TraceOperationsTable
-                                                operations={operationsSummary.operations}
-                                                highlightedOperationKey={highlightedOperationKey}
-                                                onHighlightOperation={onHighlightOperation}
-                                                partial={hasMoreSpans}
-                                            />
-                                        ),
-                                    },
-                                ]}
-                            />
-                        )}
                         {/* Keyed by trace so a new trace resets selection + scroll state. */}
                         <TraceWaterfallView
                             key={traceId ?? ''}
@@ -283,6 +259,7 @@ export function TraceDrawer({
                                 resolving={loading}
                                 tab={inspectorTab}
                                 onSelectTab={onSelectInspectorTab}
+                                operations={operations}
                             />
                         ) : (
                             <div className="text-muted p-4">No spans in this trace</div>

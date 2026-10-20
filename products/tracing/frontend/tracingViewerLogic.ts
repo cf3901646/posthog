@@ -56,7 +56,6 @@ export interface tracingViewerLogicValues {
     isLoadingFullTrace: boolean
     isTraceOpen: boolean
     openTraceSpans: Span[]
-    operationsPanelExpanded: boolean
     selectedSpanId: string | null
     selectedTraceId: string | null
     selectedTraceLoadFailed: boolean
@@ -131,9 +130,6 @@ export interface tracingViewerLogicActions {
     }
     selectSpan: (spanId: string | null) => {
         spanId: string | null
-    }
-    setOperationsPanelExpanded: (expanded: boolean) => {
-        expanded: boolean
     }
 }
 
@@ -243,7 +239,6 @@ export const tracingViewerLogic = kea<tracingViewerLogicType>([
         openCompareFlame: (spanName: string, serviceName: string) => ({ spanName, serviceName }),
         closeCompareFlame: true,
         highlightOperation: (operationKey: string | null) => ({ operationKey }),
-        setOperationsPanelExpanded: (expanded: boolean) => ({ expanded }),
     }),
 
     reducers({
@@ -315,15 +310,6 @@ export const tracingViewerLogic = kea<tracingViewerLogicType>([
                 highlightOperation: (_, { operationKey }) => operationKey,
                 openTrace: () => null,
                 closeTrace: () => null,
-            },
-        ],
-        // Persisted the same way as the inspector split in the drawer, so a collapsed operations
-        // panel stays collapsed when the user opens the next trace.
-        operationsPanelExpanded: [
-            true,
-            { persist: true },
-            {
-                setOperationsPanelExpanded: (_, { expanded }) => expanded,
             },
         ],
     }),
@@ -478,13 +464,11 @@ export const tracingViewerLogic = kea<tracingViewerLogicType>([
                 posthog.capture('tracing trace operation highlighted')
             }
         },
-        setOperationsPanelExpanded: ({ expanded }) => {
-            // pinned: analytics event name
-            posthog.capture('tracing trace operations toggled', { expanded })
-            // The operations panel is the only place that shows why the waterfall is dimmed. A
-            // collapsed panel with a highlight left in place dims spans with nothing on screen to
-            // explain it, so a collapse also clears the highlight.
-            if (!expanded) {
+        selectInspectorTab: ({ tab }) => {
+            // The Operations tab is the only place that shows why the waterfall is dimmed. A highlight
+            // left in place on another tab dims spans with nothing on screen to explain it, so leaving
+            // the tab also clears the highlight.
+            if (tab !== 'operations') {
                 actions.highlightOperation(null)
             }
         },

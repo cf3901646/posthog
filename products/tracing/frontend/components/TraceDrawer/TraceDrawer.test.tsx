@@ -58,8 +58,6 @@ describe('TraceDrawer', () => {
                     onSelectSpan={jest.fn()}
                     highlightedOperationKey={null}
                     onHighlightOperation={jest.fn()}
-                    operationsPanelExpanded
-                    onToggleOperationsPanel={jest.fn()}
                     onClose={jest.fn()}
                     {...props}
                 />
@@ -148,6 +146,44 @@ describe('TraceDrawer', () => {
 
         expect(screen.queryByText('Trace unavailable')).toBeNull()
         expect(unavailableCaptures()).toEqual([])
+    })
+
+    // Fails when the drawer stops passing the trace's spans to the inspector: the Operations tab then
+    // disappears and the inspector falls back to Attributes.
+    it('shows the operations of the trace in an inspector tab', () => {
+        renderDrawer({
+            inspectorTab: 'operations',
+            spans: [
+                makeSpan({ trace_id: 'abc123', span_id: 'span-1', is_root_span: true }),
+                makeSpan({
+                    trace_id: 'abc123',
+                    span_id: 'span-2',
+                    parent_span_id: 'span-1',
+                    is_root_span: false,
+                    name: 'SELECT orders',
+                }),
+            ],
+        })
+
+        expect(screen.getByText('Operations')).toBeInTheDocument()
+        expect(screen.getByText('2 operations · 2 spans')).toBeInTheDocument()
+    })
+
+    // Fails when a highlight outlives the Operations tab: the missing-parent notice replaces the whole
+    // inspector, so the dimmed waterfall has nothing on screen to explain it.
+    it.each([
+        { selected: 'the missing parent', selectedSpanId: 'gone', clears: true },
+        { selected: 'a loaded span', selectedSpanId: 'span-2', clears: false },
+    ])('with $selected selected, clears the highlighted operation: $clears', ({ selectedSpanId, clears }) => {
+        const onHighlightOperation = jest.fn()
+        renderDrawer({
+            spans: [makeSpan({ trace_id: 'abc123', span_id: 'span-2', parent_span_id: 'gone', is_root_span: false })],
+            selectedSpanId,
+            highlightedOperationKey: 'checkout-api\0GET /checkout',
+            onHighlightOperation,
+        })
+
+        expect(onHighlightOperation.mock.calls).toEqual(clears ? [[null]] : [])
     })
 
     it('shows a retryable error when the AI events fetch fails and there are no spans', async () => {

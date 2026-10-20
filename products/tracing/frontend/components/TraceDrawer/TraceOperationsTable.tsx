@@ -11,8 +11,8 @@ import {
     virtualizedTableHeight,
 } from '../../VirtualizedTable'
 
-// The panel lists the main contributors to the trace. The waterfall shows all of the spans. The panel
-// is as tall as the rows it shows, so a small cap keeps the waterfall near the top of the drawer.
+// The table lists the main contributors and the waterfall shows every span, so the table shows only the top 5
+// operations by the sorted column. The note under the table says how many operations there are in all.
 const MAX_OPERATIONS = 5
 
 const DEFAULT_SORT: VirtualizedSort = { columnKey: 'total', order: -1 }
@@ -27,6 +27,10 @@ export interface TraceOperationsTableProps {
     onHighlightOperation: (operationKey: string | null) => void
     /** The trace has spans that are not loaded yet, so the counts do not cover the whole trace. */
     partial?: boolean
+    /** Drop the Avg and p50 columns for a narrow container. The operation's tooltip shows them instead. */
+    compact?: boolean
+    /** What the Share column divides by: the trace duration, or the duration of the inspected span. */
+    shareOf?: 'trace' | 'span'
 }
 
 function highlightTitle(isHighlighted: boolean): string {
@@ -41,53 +45,69 @@ function operationRowKey(operation: TraceOperation): string {
     return operation.key
 }
 
+function withTimings(title: string, operation: TraceOperation, compact: boolean): string {
+    return compact
+        ? `${title}\navg ${formatDuration(operation.avg_duration_nano)} · p50 ${formatDuration(operation.p50_duration_nano)}`
+        : title
+}
+
 // The service name shares the Operation cell instead of a column of its own. Together the default widths
-// fit in 520px, the width of the drawer next to an open side panel. On a wider drawer, Operation grows into
-// the width the numeric columns leave, and a person can drag it wider to read a long name.
-const NUMERIC_COLUMNS: VirtualizedTableColumn<TraceOperation>[] = [
-    {
-        key: 'count',
-        title: 'Spans',
-        width: 72,
-        align: 'right',
-        sorter: (a, b) => a.count - b.count,
-        render: (row) => humanFriendlyNumber(row.count),
-    },
-    {
-        key: 'total',
-        title: 'Total',
-        width: 80,
-        align: 'right',
-        tooltip: 'Sum of span durations. Nested spans count in both parent and child.',
-        sorter: (a, b) => a.total_duration_nano - b.total_duration_nano,
-        render: (row) => <span className="font-mono">{formatDuration(row.total_duration_nano)}</span>,
-    },
-    {
-        key: 'avg',
-        title: 'Avg',
-        width: 72,
-        align: 'right',
-        sorter: (a, b) => a.avg_duration_nano - b.avg_duration_nano,
-        render: (row) => <span className="font-mono">{formatDuration(row.avg_duration_nano)}</span>,
-    },
-    {
-        key: 'p50',
-        title: 'p50',
-        width: 72,
-        align: 'right',
-        sorter: (a, b) => a.p50_duration_nano - b.p50_duration_nano,
-        render: (row) => <span className="font-mono">{formatDuration(row.p50_duration_nano)}</span>,
-    },
-    {
+// fit in 520px, the width of the drawer next to an open side panel. The compact set drops Avg and p50, so
+// that Share stays in view in the span inspector, which is narrower. Operation grows into the width the
+// numeric columns leave, and a person can drag it wider to read a long name.
+const SPANS_COLUMN: VirtualizedTableColumn<TraceOperation> = {
+    key: 'count',
+    title: 'Spans',
+    width: 72,
+    align: 'right',
+    sorter: (a, b) => a.count - b.count,
+    render: (row) => humanFriendlyNumber(row.count),
+}
+
+const TOTAL_COLUMN: VirtualizedTableColumn<TraceOperation> = {
+    key: 'total',
+    title: 'Total',
+    width: 80,
+    align: 'right',
+    tooltip: 'Sum of span durations. Nested spans count in both parent and child.',
+    sorter: (a, b) => a.total_duration_nano - b.total_duration_nano,
+    render: (row) => <span className="font-mono">{formatDuration(row.total_duration_nano)}</span>,
+}
+
+const AVG_COLUMN: VirtualizedTableColumn<TraceOperation> = {
+    key: 'avg',
+    title: 'Avg',
+    width: 72,
+    align: 'right',
+    sorter: (a, b) => a.avg_duration_nano - b.avg_duration_nano,
+    render: (row) => <span className="font-mono">{formatDuration(row.avg_duration_nano)}</span>,
+}
+
+const P50_COLUMN: VirtualizedTableColumn<TraceOperation> = {
+    key: 'p50',
+    title: 'p50',
+    width: 72,
+    align: 'right',
+    sorter: (a, b) => a.p50_duration_nano - b.p50_duration_nano,
+    render: (row) => <span className="font-mono">{formatDuration(row.p50_duration_nano)}</span>,
+}
+
+function shareColumn(tooltip: string): VirtualizedTableColumn<TraceOperation> {
+    return {
         key: 'share',
         title: 'Share',
         width: 72,
         align: 'right',
-        tooltip: 'Total as a share of the trace duration. Nested spans can push this above 100%.',
+        tooltip,
         sorter: (a, b) => a.share - b.share,
         render: (row) => `${(row.share * 100).toFixed(1)}%`,
-    },
-]
+    }
+}
+
+const SHARE_COLUMNS: Record<'trace' | 'span', VirtualizedTableColumn<TraceOperation>> = {
+    trace: shareColumn('Total as a share of the trace duration. Nested spans can push this above 100%.'),
+    span: shareColumn("Total as a share of this span's duration. Nested spans can push this above 100%."),
+}
 
 // Memoized because the drawer re-renders on every mousemove of an inspector resize drag. The props stay
 // the same during a drag, so the table skips that work. The columns stay the same object between renders,
@@ -97,6 +117,8 @@ export const TraceOperationsTable = memo(function TraceOperationsTable({
     highlightedOperationKey,
     onHighlightOperation,
     partial = false,
+    compact = false,
+    shareOf = 'trace',
 }: TraceOperationsTableProps): JSX.Element {
     const [sort, setSort] = useState<VirtualizedSort | null>(DEFAULT_SORT)
     const columns = useMemo(
@@ -118,23 +140,26 @@ export const TraceOperationsTable = memo(function TraceOperationsTable({
                             data-attr="tracing-trace-operations-highlight"
                             aria-pressed={isHighlighted}
                             className="block w-full font-mono text-left truncate cursor-pointer"
-                            title={highlightTitle(isHighlighted)}
+                            title={withTimings(highlightTitle(isHighlighted), row, compact)}
                             onClick={(event) => {
                                 // Stop here so that the row handler does not toggle the highlight a second time.
                                 event.stopPropagation()
                                 onHighlightOperation(nextHighlightKey(row, highlightedOperationKey))
                             }}
                         >
-                            <span title={`${row.service_name} ${row.name}`} translate="no">
+                            <span title={withTimings(`${row.service_name} ${row.name}`, row, compact)} translate="no">
                                 <span className="text-muted">{row.service_name}</span> {row.name}
                             </span>
                         </button>
                     )
                 },
             },
-            ...NUMERIC_COLUMNS,
+            SPANS_COLUMN,
+            TOTAL_COLUMN,
+            ...(compact ? [] : [AVG_COLUMN, P50_COLUMN]),
+            SHARE_COLUMNS[shareOf],
         ],
-        [highlightedOperationKey, onHighlightOperation]
+        [highlightedOperationKey, onHighlightOperation, compact, shareOf]
     )
     // Sort the whole list before the cap. Otherwise a sort by Spans only reorders the five operations with
     // the largest totals, and the most-called operations of the trace stay hidden.

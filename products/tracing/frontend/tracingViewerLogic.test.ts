@@ -235,20 +235,31 @@ describe('tracingViewerLogic', () => {
         expect(logic.values.inspectorTab).toBe('attributes')
     })
 
-    // A stale key would dim the next trace's waterfall. A collapsed operations panel that keeps the key
-    // leaves the waterfall dimmed with nothing on screen to explain it.
+    // A stale key would dim the next trace's waterfall. Another inspector tab that keeps the key leaves
+    // the waterfall dimmed with nothing on screen to explain it. A switch to the Operations tab itself
+    // must keep the pick, or a caller that selects the tab after a highlight drops it.
     it.each([
-        ['opening another trace', (l: typeof logic) => l.actions.openTrace('trace-y')],
-        ['closing the trace', (l: typeof logic) => l.actions.closeTrace()],
-        ['collapsing the operations panel', (l: typeof logic) => l.actions.setOperationsPanelExpanded(false)],
-    ])('clears the highlighted operation when %s', (_name, act) => {
+        { action: 'opening another trace', act: (l: typeof logic) => l.actions.openTrace('trace-y'), keeps: false },
+        { action: 'closing the trace', act: (l: typeof logic) => l.actions.closeTrace(), keeps: false },
+        {
+            action: 'selecting another inspector tab',
+            act: (l: typeof logic) => l.actions.selectInspectorTab('logs'),
+            keeps: false,
+        },
+        {
+            action: 'selecting the operations tab',
+            act: (l: typeof logic) => l.actions.selectInspectorTab('operations'),
+            keeps: true,
+        },
+    ])('after $action, keeps the highlighted operation: $keeps', ({ act, keeps }) => {
+        const operationKey = 'web\0cache GET'
         logic.actions.openTrace('trace-x')
-        logic.actions.highlightOperation('web\0cache GET')
-        expect(logic.values.highlightedOperationKey).toBe('web\0cache GET')
+        logic.actions.highlightOperation(operationKey)
+        expect(logic.values.highlightedOperationKey).toBe(operationKey)
 
         act(logic)
 
-        expect(logic.values.highlightedOperationKey).toBeNull()
+        expect(logic.values.highlightedOperationKey).toBe(keeps ? operationKey : null)
     })
 
     describe('closeTrace', () => {

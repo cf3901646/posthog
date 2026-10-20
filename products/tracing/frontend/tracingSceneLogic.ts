@@ -121,7 +121,6 @@ export interface tracingSceneLogicValues {
     isLoadingFullTrace: boolean // tracingViewerLogic
     isTraceOpen: boolean // tracingViewerLogic
     openTraceSpans: Span[] // tracingViewerLogic
-    operationsPanelExpanded: boolean // tracingViewerLogic
     selectedSpanId: string | null // tracingViewerLogic
     selectedTraceId: string | null // tracingViewerLogic
     selectedTraceLoadFailed: boolean // tracingViewerLogic
@@ -275,9 +274,6 @@ export interface tracingSceneLogicActions {
     selectSpan: (spanId: string | null) => {
         spanId: string | null
     } // tracingViewerLogic
-    setOperationsPanelExpanded: (expanded: boolean) => {
-        expanded: boolean
-    } // tracingViewerLogic
     keepSqlEditorMounted: (editorTabId: string) => {
         editorTabId: string
     }
@@ -381,7 +377,6 @@ export const tracingSceneLogic = kea<tracingSceneLogicType>([
                 'compareFlameServiceName',
                 'selectedTraceLoadFailed',
                 'highlightedOperationKey',
-                'operationsPanelExpanded',
             ],
         ],
         actions: [
@@ -420,7 +415,6 @@ export const tracingSceneLogic = kea<tracingSceneLogicType>([
                 'openCompareFlame',
                 'closeCompareFlame',
                 'highlightOperation',
-                'setOperationsPanelExpanded',
             ],
             featureFlagLogic,
             ['setFeatureFlags'],
