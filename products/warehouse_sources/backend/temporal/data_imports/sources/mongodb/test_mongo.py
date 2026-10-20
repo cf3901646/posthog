@@ -50,6 +50,7 @@ from products.warehouse_sources.backend.temporal.data_imports.sources.mongodb.mo
     _make_safe_server_selector,
     _process_doc_with_field_logging,
     _process_nested_value,
+    _read_upper_bound,
     connection_timeouts,
     decode_resume_id,
     encode_resume_id,
@@ -702,6 +703,28 @@ class TestProbesFailFastOnUnreachableCluster(SimpleTestCase):
             _get_partition_settings(coll, "orders")
         with pytest.raises(type(error)):
             _get_avg_document_size(coll, MagicMock())
+
+    @parameterized.expand(
+        [
+            ("server_selection_timeout", ServerSelectionTimeoutError("No servers found yet, Topology Description: .")),
+            ("host_not_allowed", HostNotAllowedError(f"{DATABASE_HOST_NOT_ALLOWED_ERROR}: internal IP")),
+        ]
+    )
+    def test_upper_bound_probe_propagates(self, _name, error):
+        coll = MagicMock()
+        coll.index_information.side_effect = error
+
+        with pytest.raises(type(error)):
+            _read_upper_bound(coll, {}, "updated_at", MagicMock())
+
+
+class TestReadUpperBound(SimpleTestCase):
+    def test_a_lookup_that_fails_leaves_the_read_uncapped(self):
+        coll = MagicMock()
+        coll.index_information.return_value = {"updated_at_1": {"key": [("updated_at", 1)]}}
+        coll.find_one.side_effect = ExecutionTimeout("operation exceeded time limit")
+
+        assert _read_upper_bound(coll, {}, "updated_at", MagicMock()) is None
 
 
 class TestListImportableCollectionNames(SimpleTestCase):
