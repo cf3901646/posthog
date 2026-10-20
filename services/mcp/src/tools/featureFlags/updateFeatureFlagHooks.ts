@@ -2,6 +2,8 @@
  * Hooks for the generated `update-feature-flag` tool. They intercept only `filters`, to
  * preserve group targeting (PostHog/posthog#46501), and leave everything else to the
  * generated handler. Re-sync is needed only if the `filters` param shape changes.
+ * The merge removes each `condition_id` before the PATCH, because the API does not store it.
+ * afterResponse adds a `condition_id` to each condition in the returned flag.
  */
 import type { Schemas } from '@/api/generated'
 import type { ToolHooks } from '@/tools/tool-hooks'

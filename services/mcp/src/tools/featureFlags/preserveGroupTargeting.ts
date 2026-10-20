@@ -73,9 +73,9 @@
 import { isDeepStrictEqual } from 'node:util'
 
 import { ToolInputValidationError } from '@/lib/errors'
-import { hasKey, isRecord } from '@/lib/plain-object'
+import { canonicalJson, hasKey, isRecord } from '@/lib/plain-object'
 
-import { canonicalJson, conditionId } from './conditionIds'
+import { conditionId } from './conditionIds'
 
 export type FlagProperty = {
     key?: string

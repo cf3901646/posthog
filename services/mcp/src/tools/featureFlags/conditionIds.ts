@@ -1,18 +1,6 @@
 import { createHash } from 'node:crypto'
 
-import { hasKey, isRecord } from '@/lib/plain-object'
-
-/**
- * Two values that isDeepStrictEqual treats as equal give the same string. The string only keys a
- * lookup. The exact comparison still runs on what the lookup finds.
- */
-export function canonicalJson(value: unknown): string {
-    const sortKeys = (_key: string, nested: unknown): unknown =>
-        isRecord(nested)
-            ? Object.fromEntries(Object.entries(nested).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
-            : nested
-    return JSON.stringify(value, sortKeys) ?? 'undefined'
-}
+import { canonicalJson, hasKey, isRecord } from '@/lib/plain-object'
 
 /**
  * The ID covers only what the update merge restores from: the key, type, group_type_index,

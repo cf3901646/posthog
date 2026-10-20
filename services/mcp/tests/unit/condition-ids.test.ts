@@ -23,7 +23,7 @@ const personPlan = (value: string): FlagConditionGroup => ({
     rollout_percentage: 100,
 })
 
-function untyped(group: FlagConditionGroup, overrides: Partial<FlagConditionGroup> = {}): FlagConditionGroup {
+function echoWithId(group: FlagConditionGroup, overrides: Partial<FlagConditionGroup> = {}): FlagConditionGroup {
     return {
         condition_id: conditionId(group),
         properties: (group.properties ?? []).map(({ key, operator, value }) => ({ key, operator, value })),
@@ -231,7 +231,7 @@ describe('condition ids', () => {
         {
             name: 'two person sets on different group types trade places',
             stored: [planOn(0, 'enterprise'), planOn(1, 'pro')],
-            sent: (stored: FlagConditionGroup[]) => [untyped(stored[1]!), untyped(stored[0]!)],
+            sent: (stored: FlagConditionGroup[]) => [echoWithId(stored[1]!), echoWithId(stored[0]!)],
             expected: [
                 [null, ['group', 1]],
                 [null, ['group', 0]],
@@ -240,17 +240,17 @@ describe('condition ids', () => {
         {
             name: 'the first of two person sets is deleted',
             stored: [planOn(0, 'pro'), planOn(1, 'pro')],
-            sent: (stored: FlagConditionGroup[]) => [untyped(stored[1]!)],
+            sent: (stored: FlagConditionGroup[]) => [echoWithId(stored[1]!)],
             expected: [[null, ['group', 1]]],
         },
         {
             name: 'a set moves and changes its value',
             stored: [planOn(0, 'enterprise'), planOn(1, 'pro')],
             sent: (stored: FlagConditionGroup[]) => [
-                untyped(stored[1]!, {
+                echoWithId(stored[1]!, {
                     properties: [{ key: 'plan', operator: 'exact', value: 'business' }],
                 }),
-                untyped(stored[0]!),
+                echoWithId(stored[0]!),
             ],
             expected: [
                 [null, ['group', 1]],
@@ -260,7 +260,7 @@ describe('condition ids', () => {
         {
             name: 'two sets with different keys trade places',
             stored: [planOn(0, 'enterprise'), personPlan('free')],
-            sent: (stored: FlagConditionGroup[]) => [untyped(stored[1]!), untyped(stored[0]!)],
+            sent: (stored: FlagConditionGroup[]) => [echoWithId(stored[1]!), echoWithId(stored[0]!)],
             expected: [
                 [null, ['person', undefined], ['person', undefined]],
                 [null, ['group', 0]],
@@ -272,7 +272,7 @@ describe('condition ids', () => {
                 { ...personPlan('free'), aggregation_group_type_index: null },
                 { ...planOn(0, 'enterprise'), aggregation_group_type_index: 0 },
             ],
-            sent: (stored: FlagConditionGroup[]) => [untyped(stored[1]!), untyped(stored[0]!)],
+            sent: (stored: FlagConditionGroup[]) => [echoWithId(stored[1]!), echoWithId(stored[0]!)],
             expected: [
                 [0, ['group', 0]],
                 [null, ['person', undefined], ['person', undefined]],
@@ -282,9 +282,9 @@ describe('condition ids', () => {
             name: 'the agent copies a condition and edits the copy',
             stored: [planOn(0, 'enterprise'), planOn(1, 'pro')],
             sent: (stored: FlagConditionGroup[]) => [
-                untyped(stored[1]!),
-                untyped(stored[1]!, { properties: [{ key: 'plan', operator: 'exact', value: 'business' }] }),
-                untyped(stored[0]!),
+                echoWithId(stored[1]!),
+                echoWithId(stored[1]!, { properties: [{ key: 'plan', operator: 'exact', value: 'business' }] }),
+                echoWithId(stored[0]!),
             ],
             expected: [
                 [null, ['group', 1]],
@@ -296,12 +296,26 @@ describe('condition ids', () => {
             name: 'a new set without an ID repeats a key that a stored person set holds as a group property',
             stored: [planOn(0, 'enterprise')],
             sent: (stored: FlagConditionGroup[]) => [
-                untyped(stored[0]!),
+                echoWithId(stored[0]!),
                 { properties: [{ key: 'plan', operator: 'exact', value: 'free' }], rollout_percentage: 100 },
             ],
             expected: [
                 [null, ['group', 0]],
                 [null, [undefined, undefined]],
+            ],
+        },
+        {
+            name: 'a new set without an ID goes in front of the stored sets',
+            stored: [planOn(0, 'enterprise'), planOn(1, 'pro')],
+            sent: (stored: FlagConditionGroup[]) => [
+                { properties: [{ key: 'plan', operator: 'exact', value: 'free' }], rollout_percentage: 100 },
+                echoWithId(stored[0]!),
+                echoWithId(stored[1]!),
+            ],
+            expected: [
+                [null, [undefined, undefined]],
+                [null, ['group', 0]],
+                [null, ['group', 1]],
             ],
         },
     ])('restores each condition from the stored condition with its ID when $name', ({ stored, sent, expected }) => {
@@ -317,8 +331,28 @@ describe('condition ids', () => {
         expect(() =>
             preserveGroupTargetingFilters(
                 { groups: stored },
-                { groups: [untyped(stored[0]!), untyped(planOn(2, 'pro'))] }
+                { groups: [echoWithId(stored[0]!), echoWithId(planOn(2, 'pro'))] }
             )
         ).toThrow(/filters\.groups\[1\]/)
+    })
+
+    it('refuses a new condition in front of the stored ones on a mixed flag when it states no aggregation', () => {
+        const mixed = [
+            { ...personPlan('free'), aggregation_group_type_index: null },
+            { ...planOn(0, 'enterprise'), aggregation_group_type_index: 0 },
+        ]
+
+        expect(() =>
+            preserveGroupTargetingFilters(
+                { groups: mixed },
+                {
+                    groups: [
+                        { properties: [{ key: 'plan', operator: 'exact', value: 'pro' }], rollout_percentage: 100 },
+                        echoWithId(mixed[0]!),
+                        echoWithId(mixed[1]!),
+                    ],
+                }
+            )
+        ).toThrow(/conditions: filters\.groups\[0\]\. /)
     })
 })
