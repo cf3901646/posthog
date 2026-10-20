@@ -1473,6 +1473,7 @@ class ExternalDataSourceType(LabeledStrEnum):
     GOOGLEADMOB = "GoogleAdMob", "GoogleAdMob"
     KLAR = "Klar", "Klar"
     CONECTOCRM = "ConectoCRM", "ConectoCRM"
+    PARTICLE = "Particle", "Particle"
 
 
 def external_data_source_type_choices() -> list[tuple[typing.Any, str]]:
