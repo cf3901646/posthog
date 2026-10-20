@@ -38,6 +38,8 @@ from posthog.schema import (
     TrendsQuery,
 )
 
+from posthog.hogql.errors import ExposedHogQLError
+
 from posthog.api.person import PropertiesTimelineRequestSerializer
 from posthog.hogql_queries.properties_timeline.properties_timeline import PropertiesTimeline, PropertiesTimelineResult
 from posthog.models.person.util import get_person_by_uuid
@@ -215,6 +217,26 @@ class TestPersonPropertiesTimeline(ClickhouseTestMixin, APIBaseTest):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(response.json()["attr"], "query")
 
+    def test_query_timeline_raises_an_exposed_error_for_a_malformed_hogql_filter(self):
+        # Key extraction parses the filter, raising a hogql `SyntaxError` — a sibling of `QueryError`, not a
+        # subclass. The endpoint turns any `ExposedHogQLError` into a 400, so this is what keeps it off a 500.
+        self._create_person({"foo": "abc"})
+        flush_persons_and_events()
+        person = get_person_by_uuid(self.team.pk, str(TEST_PERSON_ID))
+        assert person is not None
+
+        query = InsightActorsQuery(
+            source=TrendsQuery(
+                series=[EventsNode(event="$pageview")],
+                properties=[HogQLPropertyFilter(key="person.properties.foo !!")],
+            ),
+            day="2020-01-01",
+            series=0,
+        )
+
+        with self.assertRaises(ExposedHogQLError):
+            PropertiesTimeline().run(query, self.team, person)
+
     def _create_six_events_with_two_bar_changes(self):
         self._create_person({"foo": "abc", "bar": 123})
         self._create_event(
@@ -340,6 +362,14 @@ class TestPropertiesTimelineRequestSerializer(SimpleTestCase):
                 "unparseable_day",
                 InsightActorsQuery(source=TrendsQuery(series=[EventsNode(event="$pageview")]), day="not-a-date"),
                 "A Trends data point's day must be a date string.",
+            ),
+            (
+                "group_aggregated_source",
+                InsightActorsQuery(
+                    source=TrendsQuery(series=[EventsNode(event="$pageview")], aggregation_group_type_index=0),
+                    day="2020-01-01",
+                ),
+                "The properties timeline supports person aggregation only.",
             ),
         ]
     )
