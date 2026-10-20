@@ -98286,13 +98286,6 @@ export namespace Schemas {
       payload?: OfflineEvaluationResultPayloadInput;
     }
 
-    export interface ResumeReviewers {
-      /** Reviewer state read before requesting automatic control. */
-      expected_reviewers: ReviewerState;
-      /** Stable ID for this request. Reuse it on retry. */
-      operation_id: string;
-    }
-
     export type RetrieveBasicOutputStatus = typeof RetrieveBasicOutputStatus[keyof typeof RetrieveBasicOutputStatus];
 
 
