@@ -729,7 +729,11 @@ def _read_upper_bound(
     except PyMongoError as e:
         logger.warning(f"MongoDB: could not read the newest {incremental_field} ({e}), so the read is not capped")
         return None
-    return newest.get(incremental_field) if newest else None
+    if newest is None:
+        # Nothing matches yet. Capping at the lower bound reads nothing, so a document written during
+        # the read waits for the next run, as it does when the read is capped.
+        return query[incremental_field]["$gt"]
+    return newest.get(incremental_field)
 
 
 def _get_rows_to_sync(collection: Collection, query: dict[str, Any], logger: FilteringBoundLogger) -> int:
@@ -906,8 +910,12 @@ def encode_resume_id(value: Any) -> str | None:
     return _encode_bson_value(value)
 
 
-def decode_resume_id(encoded: str) -> Any:
+def _decode_bson_value(encoded: str) -> Any:
     return json_util.loads(encoded, json_options=_RESUME_ID_JSON_OPTIONS)
+
+
+def decode_resume_id(encoded: str) -> Any:
+    return _decode_bson_value(encoded)
 
 
 def _id_seek_filter(last_id: Any) -> dict[str, Any]:
@@ -992,7 +1000,7 @@ def mongo_source(
                     # A new bound would change the filter, and the documents before the checkpoint
                     # were read with the old one.
                     encoded_bound = state.upper_bound
-                    upper_bound = None if encoded_bound is None else decode_resume_id(encoded_bound)
+                    upper_bound = None if encoded_bound is None else _decode_bson_value(encoded_bound)
                 except Exception:
                     # This attempt already counts as a resume, so it cannot fall back to a
                     # fresh read. Clearing the state lets the next attempt start one.

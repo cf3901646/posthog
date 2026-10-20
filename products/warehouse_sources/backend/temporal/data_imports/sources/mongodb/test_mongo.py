@@ -18,6 +18,7 @@ from bson.codec_options import CodecOptions
 from bson.max_key import MaxKey
 from bson.min_key import MinKey
 from parameterized import parameterized
+from pymongo import DESCENDING
 from pymongo.errors import CursorNotFound, ExecutionTimeout, OperationFailure, ServerSelectionTimeoutError
 from pymongo.hello import Hello
 from pymongo.server_description import ServerDescription
@@ -794,12 +795,14 @@ class _FakeCollection:
         self.indexes: dict[str, Any] = {"_id_": {"key": [("_id", 1)]}}
         self.newest: dict[str, Any] | None = None
         self.find_one_calls: list[dict[str, Any]] = []
+        self.find_one_sorts: list[Any] = []
 
     def index_information(self) -> dict[str, Any]:
         return self.indexes
 
     def find_one(self, query: dict[str, Any], *args: Any, **kwargs: Any) -> dict[str, Any] | None:
         self.find_one_calls.append(query)
+        self.find_one_sorts.append(kwargs.get("sort"))
         return self.newest
 
     def find(self, query: dict[str, Any], **kwargs: Any) -> _FakeCursor:
@@ -1198,6 +1201,17 @@ class TestMongoSourceResume(SimpleTestCase):
         assert [s.upper_bound for s in manager.staged] == [encode_resume_id(bound) if capped else None]
         probes = [_build_query(True, "_id", IncrementalFieldType.ObjectID, None)] if capped else []
         assert collection.find_one_calls == probes
+        assert collection.find_one_sorts == ([[("_id", DESCENDING)]] if capped else [])
+
+    def test_incremental_read_with_nothing_to_read_at_its_start_reads_nothing(self) -> None:
+        collection = _FakeCollection([{"_id": ObjectId("65f1c2a4e4b0a1b2c3d4e5f6")}])
+        collection.newest = None
+
+        _read_rows(collection, resumable_source_manager=_FakeResumeManager(), should_use_incremental_field=True)
+
+        lower_bound = _build_query(True, "_id", IncrementalFieldType.ObjectID, None)["_id"]["$gt"]
+        expected = _build_query(True, "_id", IncrementalFieldType.ObjectID, None, lower_bound)
+        assert collection.find_queries[0] == expected
 
     def test_id_without_a_checkpoint_clears_the_state_once_per_run_of_such_ids(self) -> None:
         collection = _FakeCollection([{"_id": None}, {"_id": float("nan")}, {"_id": 1}, {"_id": MaxKey()}])
