@@ -50,7 +50,6 @@ tools:
             idempotent: false
         enrich_url: '{id}'
         title: Archive experiment
-        hooks: featureFlags/conditionIdHooks
         description: >
             Requires an experiment ID. If you don't have the ID, load the finding-experiments skill to resolve the
             user's reference first. Load the managing-experiment-lifecycle skill for preconditions and side effects.
@@ -72,6 +71,7 @@ tools:
                     - experimentId
                     - experiment_id
         ui_app: experiment
+        hooks: featureFlags/conditionIdHooks
         response:
             exclude:
                 - health
@@ -388,7 +388,6 @@ tools:
             destructive: false
             idempotent: false
         title: Duplicate experiment
-        hooks: featureFlags/conditionIdHooks
         description: >
             Load the managing-experiment-lifecycle skill for preconditions and side effects.
 
@@ -412,6 +411,7 @@ tools:
                 aliases:
                     - experimentId
                     - experiment_id
+        hooks: featureFlags/conditionIdHooks
         response:
             exclude:
                 - health
@@ -426,7 +426,6 @@ tools:
             idempotent: false
         enrich_url: '{id}'
         title: End experiment
-        hooks: featureFlags/conditionIdHooks
         description: >
             Requires an experiment ID. If you don't have the ID, load the finding-experiments skill to resolve the
             user's reference first. Load the managing-experiment-lifecycle skill for preconditions and side effects.
@@ -472,6 +471,7 @@ tools:
                     or the team's only connected repository. When several repositories are connected and no default is
                     set, the cleanup is skipped unless this is provided.
         ui_app: experiment
+        hooks: featureFlags/conditionIdHooks
         response:
             exclude:
                 - health
@@ -486,7 +486,6 @@ tools:
             idempotent: false
         enrich_url: '{id}'
         title: Freeze experiment exposure
-        hooks: featureFlags/conditionIdHooks
         description: >
             Requires an experiment ID. If you don't have the ID, load the finding-experiments skill to resolve the
             user's reference first. Load the managing-experiment-lifecycle skill for preconditions, limitations, and
@@ -530,6 +529,7 @@ tools:
                     - experimentId
                     - experiment_id
         ui_app: experiment
+        hooks: featureFlags/conditionIdHooks
         response:
             exclude:
                 - health
@@ -544,7 +544,6 @@ tools:
             idempotent: true
         enrich_url: '{id}'
         title: Get experiment details
-        hooks: featureFlags/conditionIdHooks
         description: >
             Get a single experiment by ID. If you have the experiment's feature flag key instead of its ID, call
             experiment-get-by-flag-key. If you have neither, load the finding-experiments skill to resolve the user's
@@ -569,6 +568,7 @@ tools:
                     - experimentId
                     - experiment_id
         ui_app: experiment
+        hooks: featureFlags/conditionIdHooks
         response:
             exclude:
                 - saved_metrics.*.effective_query
@@ -759,7 +759,6 @@ tools:
         enrich_url: '{id}'
         list: true
         title: Get all experiments
-        hooks: featureFlags/conditionIdHooks
         description: >
             List experiments in the current project. This is the primary tool for resolving experiment references — load
             the finding-experiments skill for guidance on searching by name, status, recency, or description. When the
@@ -786,6 +785,7 @@ tools:
             feature_flag_id:
                 cast: string-int
         ui_app: experiment-list
+        hooks: featureFlags/conditionIdHooks
         response:
             include:
                 - id
@@ -957,7 +957,6 @@ tools:
             idempotent: true
         enrich_url: '{id}'
         title: Migrate legacy experiment
-        hooks: featureFlags/conditionIdHooks
         description: >
             Requires an experiment ID. If you don't have the ID, load the finding-experiments skill to resolve the
             user's reference first. Only for experiments where is_legacy is true.
@@ -988,6 +987,7 @@ tools:
                     - experimentId
                     - experiment_id
         ui_app: experiment
+        hooks: featureFlags/conditionIdHooks
         response:
             exclude:
                 - health
@@ -1002,7 +1002,6 @@ tools:
             idempotent: false
         enrich_url: '{id}'
         title: Pause experiment
-        hooks: featureFlags/conditionIdHooks
         description: >
             Requires an experiment ID. If you don't have the ID, load the finding-experiments skill to resolve the
             user's reference first. Load the managing-experiment-lifecycle skill for preconditions and side effects.
@@ -1026,6 +1025,7 @@ tools:
                     - experimentId
                     - experiment_id
         ui_app: experiment
+        hooks: featureFlags/conditionIdHooks
         response:
             exclude:
                 - health
@@ -1053,7 +1053,6 @@ tools:
             idempotent: false
         enrich_url: '{id}'
         title: Reset experiment
-        hooks: featureFlags/conditionIdHooks
         description: >
             Requires an experiment ID. If you don't have the ID, load the finding-experiments skill to resolve the
             user's reference first. Load the managing-experiment-lifecycle skill for preconditions and side effects.
@@ -1079,6 +1078,7 @@ tools:
                     - experimentId
                     - experiment_id
         ui_app: experiment
+        hooks: featureFlags/conditionIdHooks
         response:
             exclude:
                 - health
@@ -1093,7 +1093,6 @@ tools:
             idempotent: false
         enrich_url: '{id}'
         title: Resume experiment
-        hooks: featureFlags/conditionIdHooks
         description: >
             Requires an experiment ID. If you don't have the ID, load the finding-experiments skill to resolve the
             user's reference first. Load the managing-experiment-lifecycle skill for preconditions and side effects.
@@ -1116,6 +1115,7 @@ tools:
                     - experimentId
                     - experiment_id
         ui_app: experiment
+        hooks: featureFlags/conditionIdHooks
         response:
             exclude:
                 - health
@@ -1281,7 +1281,6 @@ tools:
             idempotent: false
         enrich_url: '{id}'
         title: Ship experiment variant
-        hooks: featureFlags/conditionIdHooks
         description: >
             Requires an experiment ID. If you don't have the ID, load the finding-experiments skill to resolve the
             user's reference first. Load the managing-experiment-lifecycle skill for preconditions and side effects.
@@ -1349,6 +1348,7 @@ tools:
                     or the team's only connected repository. When several repositories are connected and no default is
                     set, the cleanup is skipped unless this is provided.
         ui_app: experiment
+        hooks: featureFlags/conditionIdHooks
         response:
             exclude:
                 - health
@@ -1420,7 +1420,6 @@ tools:
             idempotent: false
         enrich_url: '{id}'
         title: Unarchive experiment
-        hooks: featureFlags/conditionIdHooks
         description: >
             Requires an experiment ID. If you don't have the ID, load the finding-experiments skill to resolve the
             user's reference first. Load the managing-experiment-lifecycle skill for preconditions and side effects.
@@ -1440,6 +1439,7 @@ tools:
                     - experimentId
                     - experiment_id
         ui_app: experiment
+        hooks: featureFlags/conditionIdHooks
         response:
             exclude:
                 - health
@@ -1454,7 +1454,6 @@ tools:
             idempotent: false
         enrich_url: '{id}'
         title: Unfreeze experiment exposure
-        hooks: featureFlags/conditionIdHooks
         description: >
             Requires an experiment ID. If you don't have the ID, load the finding-experiments skill to resolve the
             user's reference first. Load the managing-experiment-lifecycle skill for preconditions and side effects.
@@ -1486,6 +1485,7 @@ tools:
                     - experimentId
                     - experiment_id
         ui_app: experiment
+        hooks: featureFlags/conditionIdHooks
         response:
             exclude:
                 - health
