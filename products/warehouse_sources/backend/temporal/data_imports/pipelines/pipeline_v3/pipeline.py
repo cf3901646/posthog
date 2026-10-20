@@ -34,7 +34,10 @@ from products.warehouse_sources.backend.temporal.data_imports.import_attempt imp
     current_import_attempt,
     current_import_attempt_cause,
 )
-from products.warehouse_sources.backend.temporal.data_imports.metrics import get_shutdown_handoff_delay_metric
+from products.warehouse_sources.backend.temporal.data_imports.metrics import (
+    get_import_finished_during_shutdown_metric,
+    get_shutdown_handoff_delay_metric,
+)
 from products.warehouse_sources.backend.temporal.data_imports.pipelines.common.extract import (
     cleanup_memory,
     commit_source_cursor,
@@ -58,6 +61,12 @@ from products.warehouse_sources.backend.temporal.data_imports.pipelines.common.p
     ShutdownStopwatch,
     SourcePreemptedError,
     SourcePreemptor,
+)
+from products.warehouse_sources.backend.temporal.data_imports.pipelines.common.ride_out import (
+    RESTARTS_FROM_SCRATCH_REASONS,
+    DurableProgress,
+    HandoffGate,
+    RideOutConfig,
 )
 from products.warehouse_sources.backend.temporal.data_imports.pipelines.common.safe_point import (
     PipelineSafePointHandler,
@@ -186,6 +195,10 @@ class PipelineV3(Generic[ResumableData]):
     # None when the pipeline waits for the source for as long as the source takes.
     _preemption: PreemptionConfig | None = None
     _shutdown_stopwatch: ShutdownStopwatch | None = None
+    # None when an import without durable progress hands off at once, as it always did.
+    _ride_out: RideOutConfig | None = None
+    _progress: DurableProgress | None = None
+    _handoff_gate: HandoffGate | None = None
     _resumed_incremental_run_uuid: str | None = None
     _sent_resumed_run_finalization: bool = False
     _writes_staged_repartition_scheme: bool = False
@@ -210,9 +223,13 @@ class PipelineV3(Generic[ResumableData]):
         resumed_incremental_value: Any = None,
         preemption: PreemptionConfig | None = None,
         kept_rows_synced: int | None = None,
+        ride_out: RideOutConfig | None = None,
+        progress: DurableProgress | None = None,
     ) -> None:
         self._resource = source_response
         self._kept_rows_synced = kept_rows_synced
+        self._ride_out = ride_out
+        self._progress = progress
         self._source_cursor_manager = source_cursor_manager
         self._resource_name = source_response.name
 
@@ -577,17 +594,19 @@ class PipelineV3(Generic[ResumableData]):
         scope = contextlib.ExitStack()
         if self._resumable_source_manager is not None:
             handler = PipelineSafePointHandler(
-                shutdown_monitor=self._shutdown_monitor,
+                raise_if_should_hand_off=self._open_handoff_gate().raise_if_should_hand_off,
                 resumable_source_manager=self._resumable_source_manager,
                 has_unwritten_rows=lambda: (
                     self._batcher.should_yield(include_incomplete_chunk=True) or self._pg_producer.has_held_batch
                 ),
             )
+            # The gate, not the raw signal: a source wait that ended early during a ride-out would
+            # skip every backoff and Retry-After for as long as the gate keeps the run here.
             scope.enter_context(
                 activate_safe_point(
                     handler,
                     covers_framework_checkpoints=source_items_are_framework_output(items),
-                    is_shutting_down=self._shutdown_monitor.is_worker_shutdown,
+                    is_shutting_down=self._open_handoff_gate().should_hand_off_now,
                 )
             )
         return scope
@@ -619,6 +638,34 @@ class PipelineV3(Generic[ResumableData]):
             return True
         return await asyncio.to_thread(self._source_resume_manager.revoke_writes, SOURCE_FENCE_TIMEOUT_SECONDS)
 
+    def _open_handoff_gate(self) -> HandoffGate:
+        """Build the gate once per run, from the monitor and stopwatch the run has at that point."""
+        if self._handoff_gate is not None:
+            return self._handoff_gate
+        if self._progress is None:
+            self._progress = DurableProgress()
+        if self._shutdown_stopwatch is None:
+            self._shutdown_stopwatch = ShutdownStopwatch(self._shutdown_monitor)
+        progress = self._progress
+        if self._resumable_source_manager is not None:
+            self._resumable_source_manager.on_commit(lambda: progress.mark("resume_commit"))
+        self._handoff_gate = HandoffGate(
+            shutdown_monitor=self._shutdown_monitor,
+            stopwatch=self._shutdown_stopwatch,
+            progress=progress,
+            config=self._ride_out,
+            legacy_wants_handoff=lambda: should_check_shutdown(
+                self._schema, self._resource, self._reset_pipeline, self._resumable_source_manager is not None
+            ),
+            restarts_from_scratch=self._restarts_from_scratch,
+            logger=self._logger,
+        )
+        return self._handoff_gate
+
+    def _restarts_from_scratch(self) -> bool:
+        decision = self._preemption_decision()
+        return not decision.eligible and decision.reason in RESTARTS_FROM_SCRATCH_REASONS
+
     def _source_items(self, items: Any, source_type: str) -> AsyncIterator[Any]:
         if self._preemption is None or self._shutdown_stopwatch is None:
             return async_iterate(items)
@@ -630,6 +677,7 @@ class PipelineV3(Generic[ResumableData]):
             fence_source=self._fence_abandoned_source,
             source_type=source_type,
             logger=self._logger,
+            gate=self._open_handoff_gate(),
         ).iterate(items)
 
     def _record_handoff_delay(self, error: WorkerShuttingDownError, source_type: str) -> None:
@@ -638,7 +686,8 @@ class PipelineV3(Generic[ResumableData]):
         delay = self._shutdown_stopwatch.elapsed_seconds()
         if delay is not None:
             mode = "preempted" if isinstance(error, SourcePreemptedError) else "cooperative"
-            get_shutdown_handoff_delay_metric(source_type, mode).record(delay)
+            reason = (self._progress.handoff_reason if self._progress is not None else None) or "unknown"
+            get_shutdown_handoff_delay_metric(source_type, mode, reason).record(delay)
 
     async def _commit_resume_state(self) -> None:
         if self._resumable_source_manager is None:
@@ -686,6 +735,9 @@ class PipelineV3(Generic[ResumableData]):
         )
         self._staged_handoff_resume_value = resume_value
         self._staged_handoff_resume_owner = owner_run_uuid
+        # A value inherited from an earlier attempt, or a void one, is not progress of this execution.
+        if resume_value is not None and self._queued_own_batch and self._progress is not None:
+            self._progress.mark("carry_over_staged")
 
     async def _advance_handoff_checkpoint(self, pa_table: pa.Table) -> None:
         if self._handoff_checkpoint is None:
@@ -707,6 +759,7 @@ class PipelineV3(Generic[ResumableData]):
         )
         should_resume = resumes_source_cursor or self._continues_incremental_handoff
         source_is_resumable = self._resumable_source_manager is not None
+        handoff_gate = self._open_handoff_gate()
 
         if resumes_source_cursor:
             await self._logger.ainfo("V3 Pipeline: Resumable source detected - attempting to resume previous import")
@@ -908,8 +961,8 @@ class PipelineV3(Generic[ResumableData]):
                     if wrote_chunk:
                         await self._commit_resume_state()
 
-                    if should_check_shutdown(self._schema, self._resource, self._reset_pipeline, source_is_resumable):
-                        if self._handoff_checkpoint is not None and self._shutdown_monitor.is_worker_shutdown():
+                    if handoff_gate.should_hand_off_now():
+                        if self._handoff_checkpoint is not None:
                             # The next attempt continues after the last staged batch, so staging the
                             # buffered rows now keeps it from extracting them again. A source with its
                             # own cursor does not get this: its cursor can be behind the buffered rows,
@@ -949,6 +1002,9 @@ class PipelineV3(Generic[ResumableData]):
             self._confirm_resume_state()
             await stage_remaining_rows()
             await self._finalize(row_count=row_count)
+
+            if activity.in_activity() and self._shutdown_monitor.is_worker_shutdown():
+                get_import_finished_during_shutdown_metric(source_type, handoff_gate.rode_out).add(1)
 
             # With zero batches, `_finalize` sent no final-batch notification, so the load
             # consumer will never hear about this run and cannot finalize it — the workflow must.
