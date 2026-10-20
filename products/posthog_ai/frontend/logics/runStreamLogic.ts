@@ -1110,6 +1110,30 @@ function persistedHumanText(entry: StoredLogEntry): string | null {
     return null
 }
 
+const KEPT_TOOL_RESPONSE_FIELDS = ['decisionReason', 'message'] as const
+
+export function reduceToolResponseCopy(entry: StoredLogEntry): void {
+    const update = entry.notification.params?.update
+    const meta = isRecord(update) ? update._meta : undefined
+    const claudeCode = isRecord(meta) ? meta.claudeCode : undefined
+    if (!isRecord(claudeCode) || !('toolResponse' in claudeCode)) {
+        return
+    }
+    const toolResponse = claudeCode.toolResponse
+    const kept = Object.fromEntries(
+        isRecord(toolResponse)
+            ? KEPT_TOOL_RESPONSE_FIELDS.flatMap((key) =>
+                  typeof toolResponse[key] === 'string' ? [[key, toolResponse[key]]] : []
+              )
+            : []
+    )
+    if (Object.keys(kept).length > 0) {
+        claudeCode.toolResponse = kept
+    } else {
+        delete claudeCode.toolResponse
+    }
+}
+
 function parseAgentEventId(eventId: string): { boot: string; sequence: number } | null {
     const match = /^(.+)-(\d+)$/.exec(eventId)
     if (!match) {
@@ -4233,6 +4257,7 @@ export const runStreamLogic = kea<runStreamLogicType>([
                             ...parsed,
                             source_run_id: parsed.source_run_id ?? (id?.startsWith('log-') ? backlogRunId : runId),
                         }
+                        reduceToolResponseCopy(entry)
                         const savedBacklog = !entry.event_id && id ? session.legacyBacklog.get(id) : undefined
                         const matchesSavedBacklog =
                             savedBacklog &&
