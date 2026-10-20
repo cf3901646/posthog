@@ -305,6 +305,38 @@ describe('condition ids', () => {
             ],
         },
         {
+            name: 'two sets with one ID hold a key as person and cohort in opposite orders and the agent edits one value',
+            stored: [
+                {
+                    properties: [
+                        { key: 'id', type: 'person', operator: 'exact', value: 'x' },
+                        { key: 'id', type: 'cohort', operator: 'exact', value: 7 },
+                    ],
+                    rollout_percentage: 100,
+                },
+                {
+                    properties: [
+                        { key: 'id', type: 'cohort', operator: 'exact', value: 7 },
+                        { key: 'id', type: 'person', operator: 'exact', value: 'x' },
+                    ],
+                    rollout_percentage: 50,
+                },
+            ],
+            sent: (stored: FlagConditionGroup[]) => [
+                echoWithId(stored[0]!),
+                echoWithId(stored[1]!, {
+                    properties: [
+                        { key: 'id', operator: 'exact', value: 8 },
+                        { key: 'id', operator: 'exact', value: 'x' },
+                    ],
+                }),
+            ],
+            expected: [
+                [null, ['person', undefined], ['cohort', undefined]],
+                [null, [undefined, undefined], ['person', undefined]],
+            ],
+        },
+        {
             name: 'a new set without an ID goes in front of the stored sets',
             stored: [planOn(0, 'enterprise'), planOn(1, 'pro')],
             sent: (stored: FlagConditionGroup[]) => [

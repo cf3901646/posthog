@@ -346,18 +346,28 @@ function resolveGroupIndex(
     return isPresentGroupIndex(explicitIndex) ? explicitIndex : fallbackIndex
 }
 
-function pickCandidate(
+function usableCandidates(
     candidates: FlagProperty[] | undefined,
-    incoming: FlagProperty,
     usableType: (type: unknown) => boolean
-): FlagProperty | undefined {
-    const usable = (candidates ?? []).filter((candidate) => usableType(candidate.type))
-    // Two group filters on one key can share an operator and differ only in group type and value.
-    return (
-        usable.find((candidate) => matchesFilter(candidate, incoming)) ??
-        (incoming.operator ? usable.find((candidate) => candidate.operator === incoming.operator) : undefined) ??
-        usable[0]
-    )
+): FlagProperty[] {
+    return (candidates ?? []).filter((candidate) => usableType(candidate.type))
+}
+
+function sameTyping(a: FlagProperty, b: FlagProperty): boolean {
+    return a.type === b.type && (a.group_type_index ?? null) === (b.group_type_index ?? null)
+}
+
+/**
+ * Prefers the candidates that match the incoming filter, then the ones with its operator, then all
+ * of them. Returns undefined when those candidates hold more than one typing, so the result never
+ * depends on the order of the stored filters.
+ */
+function pickCandidate(usable: FlagProperty[], incoming: FlagProperty): FlagProperty | undefined {
+    const matching = usable.filter((candidate) => matchesFilter(candidate, incoming))
+    const sameOperator = incoming.operator ? usable.filter((candidate) => candidate.operator === incoming.operator) : []
+    const remaining = matching.length > 0 ? matching : sameOperator.length > 0 ? sameOperator : usable
+    const first = remaining[0]
+    return first && remaining.every((candidate) => sameTyping(candidate, first)) ? first : undefined
 }
 
 function unambiguousPersonCandidates(
@@ -384,19 +394,35 @@ function mergeProperty(
 
     if (!isPresentType(out.type)) {
         if (isPresentGroupIndex(setGroupTypeIndex)) {
+            const personTyped = usableCandidates(candidates, isPersonAggregatedType)
             // Candidates that also hold the key as a group property leave the type ambiguous.
-            out.type = candidates?.some((candidate) => candidate.type === 'group')
-                ? 'group'
-                : (pickCandidate(candidates, out, isPersonAggregatedType)?.type ?? 'group')
+            const restoredType =
+                candidates?.some((candidate) => candidate.type === 'group') || personTyped.length === 0
+                    ? 'group'
+                    : pickCandidate(personTyped, out)?.type
+            if (restoredType) {
+                out.type = restoredType
+            }
         } else {
             // A person-aggregated source restores the group property it filters on, index
             // included. Any other candidate restores only a person-aggregated type, because
             // restoring `group` from it would name fields the agent never sent. Leaving the type
             // unset then makes the API report the property the agent actually sent.
+            const fromSource = usableCandidates(
+                candidates,
+                source === 'person' ? isPresentType : isPersonAggregatedType
+            )
+            // The merge reads other sets only when the source holds no usable candidate. A source
+            // whose candidates disagree leaves the property untyped.
             const restored = source
-                ? (pickCandidate(candidates, out, source === 'person' ? isPresentType : isPersonAggregatedType) ??
-                  pickCandidate(otherCandidates, out, isPersonAggregatedType))
-                : pickCandidate(unambiguousPersonCandidates(otherCandidates, out), out, isPersonAggregatedType)
+                ? pickCandidate(
+                      fromSource.length > 0 ? fromSource : usableCandidates(otherCandidates, isPersonAggregatedType),
+                      out
+                  )
+                : pickCandidate(
+                      usableCandidates(unambiguousPersonCandidates(otherCandidates, out), isPersonAggregatedType),
+                      out
+                  )
             if (restored) {
                 out.type = restored.type
                 if (restored.type === 'group' && !isPresentGroupIndex(out.group_type_index)) {
