@@ -6,6 +6,20 @@ import * as orvalSchemas from '@/generated/experiments/api'
 import { withUiApp } from '@/resources/ui-apps'
 import { SavedMetricsAttachSchema } from '@/schema/tool-inputs'
 import { castStringToInt, normalizeParamAliases } from '@/tools/cast-helpers'
+import hooks_experimentArchive from '@/tools/featureFlags/conditionIdHooks'
+import hooks_experimentDuplicate from '@/tools/featureFlags/conditionIdHooks'
+import hooks_experimentEnd from '@/tools/featureFlags/conditionIdHooks'
+import hooks_experimentFreezeExposure from '@/tools/featureFlags/conditionIdHooks'
+import hooks_experimentGet from '@/tools/featureFlags/conditionIdHooks'
+import hooks_experimentList from '@/tools/featureFlags/conditionIdHooks'
+import hooks_experimentMigrate from '@/tools/featureFlags/conditionIdHooks'
+import hooks_experimentPause from '@/tools/featureFlags/conditionIdHooks'
+import hooks_experimentReset from '@/tools/featureFlags/conditionIdHooks'
+import hooks_experimentResume from '@/tools/featureFlags/conditionIdHooks'
+import hooks_experimentShipVariant from '@/tools/featureFlags/conditionIdHooks'
+import hooks_experimentUnarchive from '@/tools/featureFlags/conditionIdHooks'
+import hooks_experimentUnfreezeExposure from '@/tools/featureFlags/conditionIdHooks'
+import { withToolHooks } from '@/tools/tool-hooks'
 import {
     withPostHogUrl,
     omitResponseFields,
@@ -65,20 +79,23 @@ const experimentArchive = (): ToolBase<
     withUiApp('experiment', {
         name: 'experiment-archive',
         schema: ExperimentArchiveSchema(),
-        handler: async (context: Context, params: z.infer<ReturnType<typeof ExperimentArchiveSchema>>) => {
-            const projectId = await context.stateManager.getProjectId()
-            const body: Record<string, unknown> = {}
-            if (params.disable_feature_flag !== undefined) {
-                body['disable_feature_flag'] = params.disable_feature_flag
+        handler: withToolHooks(
+            hooks_experimentArchive,
+            async (context: Context, params: z.infer<ReturnType<typeof ExperimentArchiveSchema>>) => {
+                const projectId = await context.stateManager.getProjectId()
+                const body: Record<string, unknown> = {}
+                if (params.disable_feature_flag !== undefined) {
+                    body['disable_feature_flag'] = params.disable_feature_flag
+                }
+                const result = await context.api.request<Schemas.Experiment>({
+                    method: 'POST',
+                    path: `/api/projects/${encodeURIComponent(String(projectId))}/experiments/${encodeURIComponent(String(params.id))}/archive/`,
+                    body,
+                })
+                const filtered = omitResponseFields(result, ['health']) as typeof result
+                return await withPostHogUrl(context, filtered, `/experiments/${filtered.id}`)
             }
-            const result = await context.api.request<Schemas.Experiment>({
-                method: 'POST',
-                path: `/api/projects/${encodeURIComponent(String(projectId))}/experiments/${encodeURIComponent(String(params.id))}/archive/`,
-                body,
-            })
-            const filtered = omitResponseFields(result, ['health']) as typeof result
-            return await withPostHogUrl(context, filtered, `/experiments/${filtered.id}`)
-        },
+        ),
     })
 
 const ExperimentCalculateRunningTimeSchema = () => {
@@ -440,23 +457,26 @@ const ExperimentDuplicateSchema = () => {
 const experimentDuplicate = (): ToolBase<ReturnType<typeof ExperimentDuplicateSchema>, unknown> => ({
     name: 'experiment-duplicate',
     schema: ExperimentDuplicateSchema(),
-    handler: async (context: Context, params: z.infer<ReturnType<typeof ExperimentDuplicateSchema>>) => {
-        const projectId = await context.stateManager.getProjectId()
-        const body: Record<string, unknown> = {}
-        if (params.name !== undefined) {
-            body['name'] = params.name
+    handler: withToolHooks(
+        hooks_experimentDuplicate,
+        async (context: Context, params: z.infer<ReturnType<typeof ExperimentDuplicateSchema>>) => {
+            const projectId = await context.stateManager.getProjectId()
+            const body: Record<string, unknown> = {}
+            if (params.name !== undefined) {
+                body['name'] = params.name
+            }
+            if (params.feature_flag_key !== undefined) {
+                body['feature_flag_key'] = params.feature_flag_key
+            }
+            const result = await context.api.request<unknown>({
+                method: 'POST',
+                path: `/api/projects/${encodeURIComponent(String(projectId))}/experiments/${encodeURIComponent(String(params.id))}/duplicate/`,
+                body,
+            })
+            const filtered = omitResponseFields(result, ['health']) as typeof result
+            return filtered
         }
-        if (params.feature_flag_key !== undefined) {
-            body['feature_flag_key'] = params.feature_flag_key
-        }
-        const result = await context.api.request<unknown>({
-            method: 'POST',
-            path: `/api/projects/${encodeURIComponent(String(projectId))}/experiments/${encodeURIComponent(String(params.id))}/duplicate/`,
-            body,
-        })
-        const filtered = omitResponseFields(result, ['health']) as typeof result
-        return filtered
-    },
+    ),
 })
 
 const ExperimentEndSchema = () => {
@@ -482,29 +502,32 @@ const experimentEnd = (): ToolBase<ReturnType<typeof ExperimentEndSchema>, WithP
     withUiApp('experiment', {
         name: 'experiment-end',
         schema: ExperimentEndSchema(),
-        handler: async (context: Context, params: z.infer<ReturnType<typeof ExperimentEndSchema>>) => {
-            const projectId = await context.stateManager.getProjectId()
-            const body: Record<string, unknown> = {}
-            if (params.conclusion !== undefined) {
-                body['conclusion'] = params.conclusion
+        handler: withToolHooks(
+            hooks_experimentEnd,
+            async (context: Context, params: z.infer<ReturnType<typeof ExperimentEndSchema>>) => {
+                const projectId = await context.stateManager.getProjectId()
+                const body: Record<string, unknown> = {}
+                if (params.conclusion !== undefined) {
+                    body['conclusion'] = params.conclusion
+                }
+                if (params.conclusion_comment !== undefined) {
+                    body['conclusion_comment'] = params.conclusion_comment
+                }
+                if (params.open_cleanup_pr !== undefined) {
+                    body['open_cleanup_pr'] = params.open_cleanup_pr
+                }
+                if (params.repository !== undefined) {
+                    body['repository'] = params.repository
+                }
+                const result = await context.api.request<Schemas.Experiment>({
+                    method: 'POST',
+                    path: `/api/projects/${encodeURIComponent(String(projectId))}/experiments/${encodeURIComponent(String(params.id))}/end/`,
+                    body,
+                })
+                const filtered = omitResponseFields(result, ['health']) as typeof result
+                return await withPostHogUrl(context, filtered, `/experiments/${filtered.id}`)
             }
-            if (params.conclusion_comment !== undefined) {
-                body['conclusion_comment'] = params.conclusion_comment
-            }
-            if (params.open_cleanup_pr !== undefined) {
-                body['open_cleanup_pr'] = params.open_cleanup_pr
-            }
-            if (params.repository !== undefined) {
-                body['repository'] = params.repository
-            }
-            const result = await context.api.request<Schemas.Experiment>({
-                method: 'POST',
-                path: `/api/projects/${encodeURIComponent(String(projectId))}/experiments/${encodeURIComponent(String(params.id))}/end/`,
-                body,
-            })
-            const filtered = omitResponseFields(result, ['health']) as typeof result
-            return await withPostHogUrl(context, filtered, `/experiments/${filtered.id}`)
-        },
+        ),
     })
 
 const ExperimentFreezeExposureSchema = () => {
@@ -524,15 +547,18 @@ const experimentFreezeExposure = (): ToolBase<
     withUiApp('experiment', {
         name: 'experiment-freeze-exposure',
         schema: ExperimentFreezeExposureSchema(),
-        handler: async (context: Context, params: z.infer<ReturnType<typeof ExperimentFreezeExposureSchema>>) => {
-            const projectId = await context.stateManager.getProjectId()
-            const result = await context.api.request<Schemas.Experiment>({
-                method: 'POST',
-                path: `/api/projects/${encodeURIComponent(String(projectId))}/experiments/${encodeURIComponent(String(params.id))}/freeze_exposure/`,
-            })
-            const filtered = omitResponseFields(result, ['health']) as typeof result
-            return await withPostHogUrl(context, filtered, `/experiments/${filtered.id}`)
-        },
+        handler: withToolHooks(
+            hooks_experimentFreezeExposure,
+            async (context: Context, params: z.infer<ReturnType<typeof ExperimentFreezeExposureSchema>>) => {
+                const projectId = await context.stateManager.getProjectId()
+                const result = await context.api.request<Schemas.Experiment>({
+                    method: 'POST',
+                    path: `/api/projects/${encodeURIComponent(String(projectId))}/experiments/${encodeURIComponent(String(params.id))}/freeze_exposure/`,
+                })
+                const filtered = omitResponseFields(result, ['health']) as typeof result
+                return await withPostHogUrl(context, filtered, `/experiments/${filtered.id}`)
+            }
+        ),
     })
 
 const ExperimentGetSchema = () => {
@@ -549,15 +575,21 @@ const experimentGet = (): ToolBase<ReturnType<typeof ExperimentGetSchema>, WithP
     withUiApp('experiment', {
         name: 'experiment-get',
         schema: ExperimentGetSchema(),
-        handler: async (context: Context, params: z.infer<ReturnType<typeof ExperimentGetSchema>>) => {
-            const projectId = await context.stateManager.getProjectId()
-            const result = await context.api.request<Schemas.Experiment>({
-                method: 'GET',
-                path: `/api/projects/${encodeURIComponent(String(projectId))}/experiments/${encodeURIComponent(String(params.id))}/`,
-            })
-            const filtered = omitResponseFields(result, ['saved_metrics.*.effective_query', 'health']) as typeof result
-            return await withPostHogUrl(context, filtered, `/experiments/${filtered.id}`)
-        },
+        handler: withToolHooks(
+            hooks_experimentGet,
+            async (context: Context, params: z.infer<ReturnType<typeof ExperimentGetSchema>>) => {
+                const projectId = await context.stateManager.getProjectId()
+                const result = await context.api.request<Schemas.Experiment>({
+                    method: 'GET',
+                    path: `/api/projects/${encodeURIComponent(String(projectId))}/experiments/${encodeURIComponent(String(params.id))}/`,
+                })
+                const filtered = omitResponseFields(result, [
+                    'saved_metrics.*.effective_query',
+                    'health',
+                ]) as typeof result
+                return await withPostHogUrl(context, filtered, `/experiments/${filtered.id}`)
+            }
+        ),
     })
 
 const ExperimentHoldoutsCreateSchema = () => {
@@ -770,57 +802,62 @@ const experimentList = (): ToolBase<
     withUiApp('experiment-list', {
         name: 'experiment-list',
         schema: ExperimentListSchema(),
-        handler: async (context: Context, params: z.infer<ReturnType<typeof ExperimentListSchema>>) => {
-            const projectId = await context.stateManager.getProjectId()
-            const result = await context.api.request<Schemas.PaginatedExperimentBasicList>({
-                method: 'GET',
-                path: `/api/projects/${encodeURIComponent(String(projectId))}/experiments/`,
-                query: {
-                    archived: params.archived,
-                    created_by_id: params.created_by_id,
-                    event: params.event,
-                    excluded_tags: params.excluded_tags,
-                    feature_flag_id: params.feature_flag_id,
-                    limit: params.limit,
-                    offset: params.offset,
-                    order: params.order,
-                    prompt_name: params.prompt_name,
-                    search: params.search,
-                    status: params.status,
-                    tags: params.tags,
-                },
-            })
-            const filtered = {
-                ...result,
-                results: (result.results ?? []).map((item: any) =>
-                    pickResponseFields(item, [
-                        'id',
-                        'name',
-                        'description',
-                        'feature_flag_key',
-                        'feature_flag',
-                        'start_date',
-                        'end_date',
-                        'archived',
-                        'type',
-                        'status',
-                        'created_at',
-                        'updated_at',
-                        'tags',
-                    ])
-                ),
-            } as typeof result
-            return await withPostHogUrl(
-                context,
-                {
-                    ...filtered,
-                    results: await Promise.all(
-                        (filtered.results ?? []).map((item) => withPostHogUrl(context, item, `/experiments/${item.id}`))
+        handler: withToolHooks(
+            hooks_experimentList,
+            async (context: Context, params: z.infer<ReturnType<typeof ExperimentListSchema>>) => {
+                const projectId = await context.stateManager.getProjectId()
+                const result = await context.api.request<Schemas.PaginatedExperimentBasicList>({
+                    method: 'GET',
+                    path: `/api/projects/${encodeURIComponent(String(projectId))}/experiments/`,
+                    query: {
+                        archived: params.archived,
+                        created_by_id: params.created_by_id,
+                        event: params.event,
+                        excluded_tags: params.excluded_tags,
+                        feature_flag_id: params.feature_flag_id,
+                        limit: params.limit,
+                        offset: params.offset,
+                        order: params.order,
+                        prompt_name: params.prompt_name,
+                        search: params.search,
+                        status: params.status,
+                        tags: params.tags,
+                    },
+                })
+                const filtered = {
+                    ...result,
+                    results: (result.results ?? []).map((item: any) =>
+                        pickResponseFields(item, [
+                            'id',
+                            'name',
+                            'description',
+                            'feature_flag_key',
+                            'feature_flag',
+                            'start_date',
+                            'end_date',
+                            'archived',
+                            'type',
+                            'status',
+                            'created_at',
+                            'updated_at',
+                            'tags',
+                        ])
                     ),
-                },
-                '/experiments'
-            )
-        },
+                } as typeof result
+                return await withPostHogUrl(
+                    context,
+                    {
+                        ...filtered,
+                        results: await Promise.all(
+                            (filtered.results ?? []).map((item) =>
+                                withPostHogUrl(context, item, `/experiments/${item.id}`)
+                            )
+                        ),
+                    },
+                    '/experiments'
+                )
+            }
+        ),
     })
 
 const ExperimentMetricsRecalculationCreateSchema = () => {
@@ -957,15 +994,18 @@ const experimentMigrate = (): ToolBase<
     withUiApp('experiment', {
         name: 'experiment-migrate',
         schema: ExperimentMigrateSchema(),
-        handler: async (context: Context, params: z.infer<ReturnType<typeof ExperimentMigrateSchema>>) => {
-            const projectId = await context.stateManager.getProjectId()
-            const result = await context.api.request<Schemas.Experiment>({
-                method: 'POST',
-                path: `/api/projects/${encodeURIComponent(String(projectId))}/experiments/${encodeURIComponent(String(params.id))}/migrate/`,
-            })
-            const filtered = omitResponseFields(result, ['health']) as typeof result
-            return await withPostHogUrl(context, filtered, `/experiments/${filtered.id}`)
-        },
+        handler: withToolHooks(
+            hooks_experimentMigrate,
+            async (context: Context, params: z.infer<ReturnType<typeof ExperimentMigrateSchema>>) => {
+                const projectId = await context.stateManager.getProjectId()
+                const result = await context.api.request<Schemas.Experiment>({
+                    method: 'POST',
+                    path: `/api/projects/${encodeURIComponent(String(projectId))}/experiments/${encodeURIComponent(String(params.id))}/migrate/`,
+                })
+                const filtered = omitResponseFields(result, ['health']) as typeof result
+                return await withPostHogUrl(context, filtered, `/experiments/${filtered.id}`)
+            }
+        ),
     })
 
 const ExperimentPauseSchema = () => {
@@ -982,15 +1022,18 @@ const experimentPause = (): ToolBase<ReturnType<typeof ExperimentPauseSchema>, W
     withUiApp('experiment', {
         name: 'experiment-pause',
         schema: ExperimentPauseSchema(),
-        handler: async (context: Context, params: z.infer<ReturnType<typeof ExperimentPauseSchema>>) => {
-            const projectId = await context.stateManager.getProjectId()
-            const result = await context.api.request<Schemas.Experiment>({
-                method: 'POST',
-                path: `/api/projects/${encodeURIComponent(String(projectId))}/experiments/${encodeURIComponent(String(params.id))}/pause/`,
-            })
-            const filtered = omitResponseFields(result, ['health']) as typeof result
-            return await withPostHogUrl(context, filtered, `/experiments/${filtered.id}`)
-        },
+        handler: withToolHooks(
+            hooks_experimentPause,
+            async (context: Context, params: z.infer<ReturnType<typeof ExperimentPauseSchema>>) => {
+                const projectId = await context.stateManager.getProjectId()
+                const result = await context.api.request<Schemas.Experiment>({
+                    method: 'POST',
+                    path: `/api/projects/${encodeURIComponent(String(projectId))}/experiments/${encodeURIComponent(String(params.id))}/pause/`,
+                })
+                const filtered = omitResponseFields(result, ['health']) as typeof result
+                return await withPostHogUrl(context, filtered, `/experiments/${filtered.id}`)
+            }
+        ),
     })
 
 const ExperimentPromptTemplatesSchema = () => z.object({})
@@ -1022,15 +1065,18 @@ const experimentReset = (): ToolBase<ReturnType<typeof ExperimentResetSchema>, W
     withUiApp('experiment', {
         name: 'experiment-reset',
         schema: ExperimentResetSchema(),
-        handler: async (context: Context, params: z.infer<ReturnType<typeof ExperimentResetSchema>>) => {
-            const projectId = await context.stateManager.getProjectId()
-            const result = await context.api.request<Schemas.Experiment>({
-                method: 'POST',
-                path: `/api/projects/${encodeURIComponent(String(projectId))}/experiments/${encodeURIComponent(String(params.id))}/reset/`,
-            })
-            const filtered = omitResponseFields(result, ['health']) as typeof result
-            return await withPostHogUrl(context, filtered, `/experiments/${filtered.id}`)
-        },
+        handler: withToolHooks(
+            hooks_experimentReset,
+            async (context: Context, params: z.infer<ReturnType<typeof ExperimentResetSchema>>) => {
+                const projectId = await context.stateManager.getProjectId()
+                const result = await context.api.request<Schemas.Experiment>({
+                    method: 'POST',
+                    path: `/api/projects/${encodeURIComponent(String(projectId))}/experiments/${encodeURIComponent(String(params.id))}/reset/`,
+                })
+                const filtered = omitResponseFields(result, ['health']) as typeof result
+                return await withPostHogUrl(context, filtered, `/experiments/${filtered.id}`)
+            }
+        ),
     })
 
 const ExperimentResumeSchema = () => {
@@ -1047,15 +1093,18 @@ const experimentResume = (): ToolBase<ReturnType<typeof ExperimentResumeSchema>,
     withUiApp('experiment', {
         name: 'experiment-resume',
         schema: ExperimentResumeSchema(),
-        handler: async (context: Context, params: z.infer<ReturnType<typeof ExperimentResumeSchema>>) => {
-            const projectId = await context.stateManager.getProjectId()
-            const result = await context.api.request<Schemas.Experiment>({
-                method: 'POST',
-                path: `/api/projects/${encodeURIComponent(String(projectId))}/experiments/${encodeURIComponent(String(params.id))}/resume/`,
-            })
-            const filtered = omitResponseFields(result, ['health']) as typeof result
-            return await withPostHogUrl(context, filtered, `/experiments/${filtered.id}`)
-        },
+        handler: withToolHooks(
+            hooks_experimentResume,
+            async (context: Context, params: z.infer<ReturnType<typeof ExperimentResumeSchema>>) => {
+                const projectId = await context.stateManager.getProjectId()
+                const result = await context.api.request<Schemas.Experiment>({
+                    method: 'POST',
+                    path: `/api/projects/${encodeURIComponent(String(projectId))}/experiments/${encodeURIComponent(String(params.id))}/resume/`,
+                })
+                const filtered = omitResponseFields(result, ['health']) as typeof result
+                return await withPostHogUrl(context, filtered, `/experiments/${filtered.id}`)
+            }
+        ),
     })
 
 const ExperimentSavedMetricsCreateSchema = () => {
@@ -1293,35 +1342,38 @@ const experimentShipVariant = (): ToolBase<
     withUiApp('experiment', {
         name: 'experiment-ship-variant',
         schema: ExperimentShipVariantSchema(),
-        handler: async (context: Context, params: z.infer<ReturnType<typeof ExperimentShipVariantSchema>>) => {
-            const projectId = await context.stateManager.getProjectId()
-            const body: Record<string, unknown> = {}
-            if (params.conclusion !== undefined) {
-                body['conclusion'] = params.conclusion
+        handler: withToolHooks(
+            hooks_experimentShipVariant,
+            async (context: Context, params: z.infer<ReturnType<typeof ExperimentShipVariantSchema>>) => {
+                const projectId = await context.stateManager.getProjectId()
+                const body: Record<string, unknown> = {}
+                if (params.conclusion !== undefined) {
+                    body['conclusion'] = params.conclusion
+                }
+                if (params.conclusion_comment !== undefined) {
+                    body['conclusion_comment'] = params.conclusion_comment
+                }
+                if (params.open_cleanup_pr !== undefined) {
+                    body['open_cleanup_pr'] = params.open_cleanup_pr
+                }
+                if (params.repository !== undefined) {
+                    body['repository'] = params.repository
+                }
+                if (params.variant_key !== undefined) {
+                    body['variant_key'] = params.variant_key
+                }
+                if (params.release_to_everyone !== undefined) {
+                    body['release_to_everyone'] = params.release_to_everyone
+                }
+                const result = await context.api.request<Schemas.Experiment>({
+                    method: 'POST',
+                    path: `/api/projects/${encodeURIComponent(String(projectId))}/experiments/${encodeURIComponent(String(params.id))}/ship_variant/`,
+                    body,
+                })
+                const filtered = omitResponseFields(result, ['health']) as typeof result
+                return await withPostHogUrl(context, filtered, `/experiments/${filtered.id}`)
             }
-            if (params.conclusion_comment !== undefined) {
-                body['conclusion_comment'] = params.conclusion_comment
-            }
-            if (params.open_cleanup_pr !== undefined) {
-                body['open_cleanup_pr'] = params.open_cleanup_pr
-            }
-            if (params.repository !== undefined) {
-                body['repository'] = params.repository
-            }
-            if (params.variant_key !== undefined) {
-                body['variant_key'] = params.variant_key
-            }
-            if (params.release_to_everyone !== undefined) {
-                body['release_to_everyone'] = params.release_to_everyone
-            }
-            const result = await context.api.request<Schemas.Experiment>({
-                method: 'POST',
-                path: `/api/projects/${encodeURIComponent(String(projectId))}/experiments/${encodeURIComponent(String(params.id))}/ship_variant/`,
-                body,
-            })
-            const filtered = omitResponseFields(result, ['health']) as typeof result
-            return await withPostHogUrl(context, filtered, `/experiments/${filtered.id}`)
-        },
+        ),
     })
 
 const ExperimentStatsSchema = () => z.object({})
@@ -1397,15 +1449,18 @@ const experimentUnarchive = (): ToolBase<
     withUiApp('experiment', {
         name: 'experiment-unarchive',
         schema: ExperimentUnarchiveSchema(),
-        handler: async (context: Context, params: z.infer<ReturnType<typeof ExperimentUnarchiveSchema>>) => {
-            const projectId = await context.stateManager.getProjectId()
-            const result = await context.api.request<Schemas.Experiment>({
-                method: 'POST',
-                path: `/api/projects/${encodeURIComponent(String(projectId))}/experiments/${encodeURIComponent(String(params.id))}/unarchive/`,
-            })
-            const filtered = omitResponseFields(result, ['health']) as typeof result
-            return await withPostHogUrl(context, filtered, `/experiments/${filtered.id}`)
-        },
+        handler: withToolHooks(
+            hooks_experimentUnarchive,
+            async (context: Context, params: z.infer<ReturnType<typeof ExperimentUnarchiveSchema>>) => {
+                const projectId = await context.stateManager.getProjectId()
+                const result = await context.api.request<Schemas.Experiment>({
+                    method: 'POST',
+                    path: `/api/projects/${encodeURIComponent(String(projectId))}/experiments/${encodeURIComponent(String(params.id))}/unarchive/`,
+                })
+                const filtered = omitResponseFields(result, ['health']) as typeof result
+                return await withPostHogUrl(context, filtered, `/experiments/${filtered.id}`)
+            }
+        ),
     })
 
 const ExperimentUnfreezeExposureSchema = () => {
@@ -1425,15 +1480,18 @@ const experimentUnfreezeExposure = (): ToolBase<
     withUiApp('experiment', {
         name: 'experiment-unfreeze-exposure',
         schema: ExperimentUnfreezeExposureSchema(),
-        handler: async (context: Context, params: z.infer<ReturnType<typeof ExperimentUnfreezeExposureSchema>>) => {
-            const projectId = await context.stateManager.getProjectId()
-            const result = await context.api.request<Schemas.Experiment>({
-                method: 'POST',
-                path: `/api/projects/${encodeURIComponent(String(projectId))}/experiments/${encodeURIComponent(String(params.id))}/unfreeze_exposure/`,
-            })
-            const filtered = omitResponseFields(result, ['health']) as typeof result
-            return await withPostHogUrl(context, filtered, `/experiments/${filtered.id}`)
-        },
+        handler: withToolHooks(
+            hooks_experimentUnfreezeExposure,
+            async (context: Context, params: z.infer<ReturnType<typeof ExperimentUnfreezeExposureSchema>>) => {
+                const projectId = await context.stateManager.getProjectId()
+                const result = await context.api.request<Schemas.Experiment>({
+                    method: 'POST',
+                    path: `/api/projects/${encodeURIComponent(String(projectId))}/experiments/${encodeURIComponent(String(params.id))}/unfreeze_exposure/`,
+                })
+                const filtered = omitResponseFields(result, ['health']) as typeof result
+                return await withPostHogUrl(context, filtered, `/experiments/${filtered.id}`)
+            }
+        ),
     })
 
 const ExperimentUpdateSchema = () => {

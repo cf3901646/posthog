@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 
-import { isRecord } from '@/lib/plain-object'
+import { hasKey, isRecord } from '@/lib/plain-object'
 
 /**
  * Two values that isDeepStrictEqual treats as equal give the same string. The string only keys a
@@ -34,7 +34,7 @@ export function conditionId(group: Record<string, unknown>): string {
             ])
         )
         .sort()
-    const aggregation = Object.prototype.hasOwnProperty.call(group, 'aggregation_group_type_index')
+    const aggregation = hasKey(group, 'aggregation_group_type_index')
         ? (group.aggregation_group_type_index ?? null)
         : 'absent'
     return createHash('sha256')
@@ -43,12 +43,32 @@ export function conditionId(group: Record<string, unknown>): string {
         .slice(0, 16)
 }
 
-export function withConditionIds<T>(flag: T): T {
-    if (!isRecord(flag) || !isRecord(flag.filters) || !Array.isArray(flag.filters.groups)) {
-        return flag
+/**
+ * Accepts a flag, a record that holds a flag under `feature_flag` (an experiment or a my-flags
+ * row), or a list of either as an array or under `results`. Any other value passes through.
+ */
+export function withConditionIds<T>(value: T): T {
+    if (Array.isArray(value)) {
+        return value.map(withConditionIds) as T
     }
-    const groups = flag.filters.groups.map((group: unknown) =>
-        isRecord(group) ? { condition_id: conditionId(group), ...group } : group
-    )
-    return { ...flag, filters: { ...flag.filters, groups } }
+    if (!isRecord(value)) {
+        return value
+    }
+    if (Array.isArray(value.results)) {
+        return { ...value, results: value.results.map(withConditionIds) }
+    }
+    if (isRecord(value.feature_flag)) {
+        return { ...value, feature_flag: withConditionIds(value.feature_flag) }
+    }
+    if (!isRecord(value.filters) || !Array.isArray(value.filters.groups)) {
+        return value
+    }
+    const groups = value.filters.groups.map((group: unknown) => {
+        if (!isRecord(group)) {
+            return group
+        }
+        const { condition_id: _stored, ...rest } = group
+        return { condition_id: conditionId(group), ...rest }
+    })
+    return { ...value, filters: { ...value.filters, groups } }
 }

@@ -7,7 +7,7 @@ import type { Schemas } from '@/api/generated'
 import type { ToolHooks } from '@/tools/tool-hooks'
 import type { Context } from '@/tools/types'
 
-import { withConditionIds } from './conditionIds'
+import conditionIdHooks from './conditionIdHooks'
 import { preserveGroupTargetingFilters, type FlagFilters } from './preserveGroupTargeting'
 
 type UpdateParams = {
@@ -35,6 +35,6 @@ async function beforeRequest<T extends UpdateParams>(context: Context, params: T
 }
 
 export default {
+    ...conditionIdHooks,
     beforeRequest,
-    afterResponse: (_context, _params, result) => withConditionIds(result),
 } satisfies ToolHooks<UpdateParams>

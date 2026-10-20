@@ -1,11 +1,14 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
+import { isRecord } from '@/lib/plain-object'
+import { getToolByName } from '@/shared/test-utils'
 import { conditionId, withConditionIds } from '@/tools/featureFlags/conditionIds'
 import {
     type FlagConditionGroup,
     type FlagFilters,
     preserveGroupTargetingFilters,
 } from '@/tools/featureFlags/preserveGroupTargeting'
+import type { Context } from '@/tools/types'
 
 const planOn = (group_type_index: number, value: string): FlagConditionGroup => ({
     properties: [{ key: 'plan', type: 'group', group_type_index, operator: 'exact', value }],
@@ -36,6 +39,110 @@ function typings(filters: FlagFilters | null | undefined): unknown[][] {
     ])
 }
 
+const flag = (id: number): Record<string, unknown> => ({
+    id,
+    key: `flag-${id}`,
+    filters: {
+        groups: [{ ...planOn(0, `plan-${id}`), aggregation_group_type_index: 0 }, personPlan('free')],
+        multivariate: null,
+    },
+    active: true,
+})
+
+const experiment = (id: number): Record<string, unknown> => ({
+    id,
+    name: `Experiment ${id}`,
+    feature_flag_key: `flag-${id + 100}`,
+    feature_flag: flag(id + 100),
+    metrics: [],
+    status: 'running',
+})
+
+function conditionsIn(value: unknown): Record<string, unknown>[] {
+    if (Array.isArray(value)) {
+        return value.flatMap(conditionsIn)
+    }
+    if (!isRecord(value)) {
+        return []
+    }
+    return Object.entries(value).flatMap(([key, nested]) =>
+        key === 'filters' && isRecord(nested) && Array.isArray(nested.groups)
+            ? nested.groups.filter(isRecord)
+            : conditionsIn(nested)
+    )
+}
+
+function withoutConditionIds(value: unknown): unknown {
+    return JSON.parse(JSON.stringify(value, (key, nested) => (key === 'condition_id' ? undefined : nested)))
+}
+
+function contextReturning(responses: unknown[]): Context {
+    const request = vi.fn()
+    for (const response of responses) {
+        request.mockResolvedValueOnce(response)
+    }
+    return {
+        api: { request, getProjectBaseUrl: (projectId: string) => `https://us.posthog.com/project/${projectId}` },
+        stateManager: { getProjectId: vi.fn().mockResolvedValue('42') },
+    } as unknown as Context
+}
+
+const EXPERIMENT_TOOLS_BY_ID = [
+    'experiment-archive',
+    'experiment-duplicate',
+    'experiment-end',
+    'experiment-freeze-exposure',
+    'experiment-get',
+    'experiment-migrate',
+    'experiment-pause',
+    'experiment-reset',
+    'experiment-resume',
+    'experiment-ship-variant',
+    'experiment-unarchive',
+    'experiment-unfreeze-exposure',
+]
+
+// feature-flag-get-all, feature-flag-enable, feature-flag-disable, feature-flag-archive, and
+// feature-flag-unarchive keep no `filters` in their responses, so they are not listed.
+const CONDITION_TOOLS: { tool: string; params: Record<string, unknown>; responses: unknown[] }[] = [
+    { tool: 'create-feature-flag', params: { key: 'flag-9', name: 'Flag 9' }, responses: [flag(9)] },
+    { tool: 'delete-feature-flag', params: { id: 9 }, responses: [{ ...flag(9), deleted: true }] },
+    { tool: 'feature-flag-get-definition', params: { id: 9 }, responses: [flag(9)] },
+    {
+        tool: 'feature-flag-get-definition-by-key',
+        params: { key: 'flag-9' },
+        responses: [{ results: [flag(9)] }],
+    },
+    { tool: 'feature-flag-roll-out-to-everyone', params: { id: 9, version: 3 }, responses: [flag(9)] },
+    {
+        tool: 'feature-flag-set-release-condition-rollout',
+        params: { id: 9, condition_index: 0, rollout_percentage: 25, version: 3 },
+        responses: [flag(9)],
+    },
+    {
+        tool: 'feature-flags-my-flags-retrieve',
+        params: {},
+        responses: [
+            [
+                { feature_flag: flag(9), value: true },
+                { feature_flag: flag(10), value: 'test' },
+            ],
+        ],
+    },
+    { tool: 'update-feature-flag', params: { id: 9, name: 'Renamed' }, responses: [flag(9)] },
+    ...EXPERIMENT_TOOLS_BY_ID.map((tool) => ({ tool, params: { id: 5 }, responses: [experiment(5)] })),
+    {
+        tool: 'experiment-get-by-flag-key',
+        params: { feature_flag_key: 'flag-105' },
+        responses: [{ results: [{ id: 105, key: 'flag-105', experiment_set: [5] }] }, experiment(5)],
+    },
+    {
+        tool: 'experiment-list',
+        params: {},
+        responses: [{ count: 2, next: null, previous: null, results: [experiment(5), experiment(6)] }],
+    },
+]
+
 describe('condition ids', () => {
     it('gives the same ID to one stored condition however the API renders it', () => {
         const stored = {
@@ -43,12 +150,17 @@ describe('condition ids', () => {
             properties: [
                 { key: 'id', type: 'cohort', operator: 'in', value: 7 },
                 { key: 'plan', type: 'group', group_type_index: 0, operator: 'exact', value: 'pro' },
+                { key: '$group_key', type: 'group', group_type_index: 0, operator: 'exact', value: 'acme' },
             ],
             rollout_percentage: 50,
         }
         const rendered = {
             ...stored,
-            properties: [{ ...stored.properties[1]! }, { ...stored.properties[0]!, cohort_name: 'Paying customers' }],
+            properties: [
+                { ...stored.properties[1]! },
+                { ...stored.properties[0]!, cohort_name: 'Paying customers' },
+                { ...stored.properties[2]!, group_key_names: { acme: 'Acme Inc' } },
+            ],
             rollout_percentage: 75,
             variant: 'test',
             description: 'Edited in the UI',
@@ -76,14 +188,43 @@ describe('condition ids', () => {
         expect(conditionId({ ...absent, aggregation_group_type_index: null })).not.toBe(conditionId(absent))
     })
 
-    it('adds an ID to each condition of a flag and passes other values through', () => {
-        const flag = { id: 3, filters: { groups: [planOn(0, 'pro'), planOn(1, 'pro')] } }
+    it.each([
+        { name: 'a flag', value: flag(9) },
+        { name: 'an experiment', value: experiment(5) },
+        {
+            name: 'a page of experiments where one has no flag',
+            value: {
+                count: 2,
+                next: 'https://us.posthog.com/api/projects/42/experiments/?offset=2',
+                results: [experiment(5), { ...experiment(6), feature_flag: null }],
+                _posthogUrl: 'https://us.posthog.com/project/42/experiments',
+            },
+        },
+        {
+            name: 'a list of my-flags rows',
+            value: [
+                { feature_flag: flag(9), value: true },
+                { feature_flag: flag(10), value: 'test' },
+            ],
+        },
+        { name: 'a lookup miss', value: { found: false, key: 'flag-9', message: 'No feature flag' } },
+        {
+            name: 'a flag whose conditions carry a saved condition_id',
+            value: { id: 9, filters: { groups: [{ condition_id: 'saved-by-api', ...personPlan('free') }] } },
+        },
+    ])('adds an ID to each condition of $name and changes nothing else', ({ value }) => {
+        const result = withConditionIds(structuredClone(value))
 
-        expect(withConditionIds(flag).filters.groups.map((group) => group.condition_id)).toEqual([
-            conditionId(planOn(0, 'pro')),
-            conditionId(planOn(1, 'pro')),
-        ])
-        expect(withConditionIds({ found: false })).toEqual({ found: false })
+        expect(conditionsIn(result).map((group) => group.condition_id)).toEqual(conditionsIn(value).map(conditionId))
+        expect(withoutConditionIds(result)).toEqual(withoutConditionIds(value))
+    })
+
+    it.each(CONDITION_TOOLS)('$tool returns each condition with its ID', async ({ tool, params, responses }) => {
+        const expected = conditionsIn(responses.at(-1)).map(conditionId)
+
+        const result = await getToolByName(tool).handler(contextReturning(responses), params)
+
+        expect(conditionsIn(result).map((group) => group.condition_id)).toEqual(expected)
     })
 
     it.each([

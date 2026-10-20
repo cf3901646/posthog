@@ -1302,22 +1302,23 @@ export const UpdateFeatureFlagFiltersSchema = FeatureFlagUpdateFilters.extend({
                     .string()
                     .optional()
                     .describe(
-                        'ID of the stored condition this one came from, copied from the flag definition you read. ' +
-                            'Omit it on a new condition. The update is refused when it matches no current condition, ' +
-                            'because the flag changed after you read it.'
+                        'The condition_id this condition had when you read the flag. Send it unchanged when you ' +
+                            'keep, edit, or move the condition. Leave it off a new condition. The update is refused ' +
+                            'when no condition on the flag has this ID.'
                     ),
             })
         )
         .optional()
-        .describe('Release condition groups for the feature flag.'),
+        .describe(FeatureFlagUpdateFilters.shape.groups.description!),
 }).describe(
-    'Full release-condition object (replaces filters at the API). Read the flag first. On every condition you keep, ' +
-        'edit, or move, send its `condition_id` exactly as the read returned it, and leave it off a new condition. ' +
-        "The tool uses it to keep each condition's property types and targeting when you reorder, delete, or edit " +
-        'conditions. For group flags set aggregation_group_type_index and property type "group" + group_type_index. ' +
-        'Omitted type / group_type_index / aggregation_group_type_index are filled from the existing flag to prevent ' +
-        "silent person demotion (see #46501). When conditions don't all target the same thing (persons and a group " +
-        'type, or different group types) and you add, remove, reorder, or change the properties of conditions ' +
-        'without `condition_id` values, set aggregation_group_type_index on each condition (null for persons), or ' +
-        'the update is refused.'
+    'Full release-condition object. It replaces the stored filters, so read the flag first and send every ' +
+        'condition you want to keep. Each condition you read has a `condition_id`. Send it unchanged on every ' +
+        'condition you keep, edit, or move, and leave it off a new condition. A condition without one is treated ' +
+        "as new when any condition has one. The tool uses the ID to restore each condition's property types and " +
+        'targeting. For group flags set aggregation_group_type_index and property type "group" + group_type_index. ' +
+        'Omitted type, group_type_index, and aggregation_group_type_index are filled from the existing flag, so ' +
+        "group targeting does not become person targeting. When conditions don't all target the same thing " +
+        '(persons and a group type, or different group types), set aggregation_group_type_index on each new ' +
+        'condition (null for persons). If you send no `condition_id` values, set it on every condition whenever ' +
+        'you add, remove, reorder, or change the properties of conditions. Otherwise the update is refused.'
 )

@@ -4,6 +4,10 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+export function hasKey(obj: Record<string, unknown> | null | undefined, key: string): boolean {
+    return !!obj && Object.prototype.hasOwnProperty.call(obj, key)
+}
+
 /**
  * Assign a key without triggering the inherited `__proto__` setter. Parsed JSON
  * can legitimately carry an own `__proto__` key (e.g. a tool payload being
