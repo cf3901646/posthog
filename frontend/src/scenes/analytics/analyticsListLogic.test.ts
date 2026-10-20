@@ -5,6 +5,7 @@ import posthog from 'posthog-js'
 import { FEATURE_FLAGS } from 'lib/constants'
 import { featureFlagLogic } from 'lib/logic/featureFlagLogic'
 import { urls } from 'scenes/urls'
+import { userLogic } from 'scenes/userLogic'
 
 import { useMocks } from '~/mocks/jest'
 import { initKeaTests } from '~/test/init'
@@ -93,5 +94,32 @@ describe('analyticsListLogic', () => {
             ['analytics collection opened', false],
             ['views list loaded', 'folder'],
         ])
+    })
+
+    it('keeps My work on one query when the user record reloads, so the list does not render again', async () => {
+        const logic = analyticsListLogic()
+        logic.mount()
+        router.actions.push(urls.analyticsMine())
+        await expectLogic(logic).toFinishAllListeners()
+        const query = logic.values.feedQuery
+
+        userLogic.actions.loadUserSuccess({ ...userLogic.values.user! })
+
+        expect(query.createdByMe).toBe(true)
+        expect(logic.values.feedQuery).toBe(query)
+    })
+
+    it.each([
+        ['a number', { search: '4' }, { search: '4' }],
+        ['a boolean word', { search: 'true' }, { search: 'true' }],
+        ['text shaped like a list', { search: '[draft]' }, { search: '[draft]' }],
+        ['a collection named with a number', { folder: '2024' }, { folder: '2024' }],
+    ])('reads %s back from the URL as the text that was typed', async (_, params, expected) => {
+        const logic = analyticsListLogic()
+        logic.mount()
+        router.actions.push(urls.analyticsList(params))
+        await expectLogic(logic).toFinishAllListeners()
+
+        expect(logic.values.filters).toMatchObject(expected)
     })
 })

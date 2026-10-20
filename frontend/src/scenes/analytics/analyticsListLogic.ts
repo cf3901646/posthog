@@ -88,6 +88,11 @@ function stringList(value: unknown): string[] {
     return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
 }
 
+/** The router reads a value that looks like a number or a boolean as one, so text goes back to a string. */
+function urlParamToString(value: unknown): string {
+    return `${value ?? ''}`
+}
+
 export function analyticsListFiltersFromUrl(params: Record<string, any>): AnalyticsListFilters {
     const type = typeof params.type === 'string' && isAnalyticsType(params.type) ? params.type : 'all'
     const tags = Array.isArray(params.tags)
@@ -95,9 +100,9 @@ export function analyticsListFiltersFromUrl(params: Record<string, any>): Analyt
         : []
     return {
         type,
-        search: typeof params.search === 'string' ? params.search : '',
+        search: urlParamToString(params.search),
         createdBy: stringList(params.createdBy),
-        folder: typeof params.folder === 'string' ? params.folder : null,
+        folder: params.folder === undefined || params.folder === null ? null : urlParamToString(params.folder),
         tags,
     }
 }
@@ -137,6 +142,7 @@ export interface analyticsListLogicValues {
     user: UserType | null // userLogic
     creators: string[]
     currentFeed: AnalyticsFeed
+    currentUserUuid: string | null
     failedTypes: AnalyticsFeed['failedTypes']
     feed: AnalyticsFeed
     feedQuery: AnalyticsFeedQuery
@@ -270,8 +276,14 @@ export interface analyticsListLogicMeta {
     __keaTypeGenInternalSelectorTypes: {
         mode: (filters: AnalyticsListFilters) => AnalyticsListMode
         filtersActive: (filters: AnalyticsListFilters) => boolean
-        creators: (filters: AnalyticsListFilters, user: UserType | null, scope: AnalyticsListScope) => string[]
-        feedQuery: (filters: AnalyticsListFilters, feedSearch: string, creators: string[]) => AnalyticsFeedQuery
+        currentUserUuid: (user: UserType | null) => string | null
+        creators: (filters: AnalyticsListFilters, currentUserUuid: string | null, scope: AnalyticsListScope) => string[]
+        feedQuery: (
+            filters: AnalyticsListFilters,
+            feedSearch: string,
+            creators: string[],
+            currentUserUuid: string | null
+        ) => AnalyticsFeedQuery
         currentFeed: (
             sources: Record<string, AnalyticsSourceState>,
             currentTeamId: number | null,
@@ -455,17 +467,25 @@ export const analyticsListLogic = kea<analyticsListLogicType>([
             (filters: AnalyticsListFilters): boolean => analyticsListFiltersActive(filters),
         ],
         // My work narrows to the person; View all narrows to whoever they picked.
+        // The user record is replaced on every reload; its uuid is not, so the feed query only changes when the person does.
+        currentUserUuid: [(s) => [s.user], (user: UserType | null): string | null => user?.uuid ?? null],
         creators: [
-            (s) => [s.filters, s.user, s.scope],
-            (filters: AnalyticsListFilters, user: UserType | null, scope: AnalyticsListScope): string[] =>
-                scope === 'mine' ? (user?.uuid ? [user.uuid] : []) : filters.createdBy,
+            (s) => [s.filters, s.currentUserUuid, s.scope],
+            (filters: AnalyticsListFilters, currentUserUuid: string | null, scope: AnalyticsListScope): string[] =>
+                scope === 'mine' ? (currentUserUuid ? [currentUserUuid] : []) : filters.createdBy,
         ],
         feedQuery: [
-            (s) => [s.filters, s.feedSearch, s.creators],
-            (filters: AnalyticsListFilters, feedSearch: string, creators: string[]): AnalyticsFeedQuery => ({
+            (s) => [s.filters, s.feedSearch, s.creators, s.currentUserUuid],
+            (
+                filters: AnalyticsListFilters,
+                feedSearch: string,
+                creators: string[],
+                currentUserUuid: string | null
+            ): AnalyticsFeedQuery => ({
                 type: filters.type,
                 search: feedSearch.trim(),
                 createdBy: creators,
+                createdByMe: !!currentUserUuid && creators.length === 1 && creators[0] === currentUserUuid,
                 tags: filters.tags,
             }),
         ],
