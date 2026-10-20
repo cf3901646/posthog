@@ -1166,23 +1166,33 @@ class TestMongoSourceResume(SimpleTestCase):
         assert collection.find_one_calls == []
         assert [(decode_resume_id(s.last_id), s.upper_bound) for s in manager.staged] == [(next_id, bound)]
 
-    @parameterized.expand([("indexed", True), ("not_indexed", False)])
+    @parameterized.expand(
+        [
+            ("ascending_index", {"_id_": {"key": [("_id", 1)]}}, True),
+            ("descending_index", {"_id_-1": {"key": [("_id", -1)]}}, True),
+            # A hashed index serves neither the range predicate nor the sort, so it is no index here.
+            ("hashed_index", {"_id_hashed": {"key": [("_id", "hashed")]}}, False),
+            ("other_field_indexed", {"other_1": {"key": [("other", 1)]}}, False),
+            ("not_indexed", {}, False),
+        ]
+    )
     def test_first_incremental_sync_caps_its_read_at_the_newest_value_when_it_starts(
-        self, _name: str, indexed: bool
+        self, _name: str, indexes: dict[str, Any], capped: bool
     ) -> None:
         newest = ObjectId("65f1c2a4e4b0a1b2c3d4e5f9")
         doc_id = ObjectId("65f1c2a4e4b0a1b2c3d4e5f6")
         collection = _FakeCollection([{"_id": doc_id}])
         collection.newest = {"_id": newest}
-        if not indexed:
-            collection.indexes = {}
+        collection.indexes = indexes
         manager = _FakeResumeManager()
 
         _read_rows(collection, resumable_source_manager=manager, should_use_incremental_field=True)
 
-        bound = newest if indexed else None
+        bound = newest if capped else None
         assert collection.find_queries[0] == _build_query(True, "_id", IncrementalFieldType.ObjectID, None, bound)
-        assert [s.upper_bound for s in manager.staged] == [encode_resume_id(bound) if indexed else None]
+        assert [s.upper_bound for s in manager.staged] == [encode_resume_id(bound) if capped else None]
+        probes = [_build_query(True, "_id", IncrementalFieldType.ObjectID, None)] if capped else []
+        assert collection.find_one_calls == probes
 
     def test_id_without_a_checkpoint_clears_the_state_once_per_run_of_such_ids(self) -> None:
         collection = _FakeCollection([{"_id": None}, {"_id": float("nan")}, {"_id": 1}, {"_id": MaxKey()}])

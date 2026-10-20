@@ -694,10 +694,14 @@ def _read_upper_bound(
     watermark, so the next run reads it.
     """
     try:
-        indexed = any(spec["key"][0][0] == incremental_field for spec in collection.index_information().values())
+        # A hashed, text or geo index on the field serves neither the range predicate nor the sort,
+        # so only an ascending or descending one keeps the lookup off a second collection scan.
+        indexed = any(
+            field == incremental_field and direction in (ASCENDING, DESCENDING)
+            for field, direction in (spec["key"][0] for spec in collection.index_information().values())
+        )
         if not indexed:
-            # Without an index the lookup scans the whole collection a second time.
-            logger.debug(f"MongoDB: no index starts with {incremental_field}, so the read is not capped")
+            logger.debug(f"MongoDB: no ordered index starts with {incremental_field}, so the read is not capped")
             return None
         newest = collection.find_one(
             query,
