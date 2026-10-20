@@ -28,8 +28,12 @@ from products.warehouse_sources.backend.temporal.data_imports.pipelines.pipeline
     process_message,
     process_messages,
 )
+from products.warehouse_sources_queue.backend.core.jobs_db import UnfinishedEarlierBatches
 
 _PROCESSOR = "products.warehouse_sources.backend.temporal.data_imports.pipelines.pipeline_v3.load.processor"
+
+# Every batch of a run before its final one loaded, which is what these tests stage.
+_COMPLETE_RUN = UnfinishedEarlierBatches(count=0, first_batch_index=None, states=())
 
 _SEED_IDS = [1, 2]
 _SEED_WATERMARK = 2
@@ -149,6 +153,11 @@ def _boundaries(settings: Any) -> Iterator[None]:
         ):
             stack.enter_context(patch(f"{_PROCESSOR}.{target}"))
         stack.enter_context(patch(f"{_PROCESSOR}.is_batch_already_processed", return_value=False))
+        # Completing a run asks the queue DB whether an earlier batch of it is unfinished, and these
+        # tests drive the processor against the Django test database, which holds no queue tables.
+        stack.enter_context(
+            patch(f"{_PROCESSOR}.BatchQueue.get_unfinished_earlier_batches_sync", return_value=_COMPLETE_RUN)
+        )
         stack.enter_context(patch(f"{_PROCESSOR}.finish_row_tracking", new_callable=AsyncMock))
         stack.enter_context(
             patch(
