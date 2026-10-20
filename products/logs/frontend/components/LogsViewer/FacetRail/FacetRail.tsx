@@ -61,7 +61,8 @@ export function FacetRail({ id }: FacetRailProps): JSX.Element {
     return (
         <div
             ref={railRef}
-            className="relative flex flex-col shrink-0 border rounded bg-surface-primary overflow-hidden"
+            // In a narrow viewer the rail stacks above the results, so the full width replaces the dragged width.
+            className="relative flex flex-col shrink-0 border rounded bg-surface-primary overflow-hidden @max-[48rem]/logs-viewer:!w-full @max-[48rem]/logs-viewer:!max-w-full @max-[48rem]/logs-viewer:max-h-48"
             // eslint-disable-next-line react/forbid-dom-props
             style={{ width: desiredSize ?? DEFAULT_WIDTH_PX, minWidth: 'min-content', maxWidth: '40%' }}
             data-attr="logs-facet-rail"
@@ -114,7 +115,13 @@ export function FacetRail({ id }: FacetRailProps): JSX.Element {
                     </div>
                 ))}
             </div>
-            <Resizer {...resizerLogicProps} visible={false} offset="0.25rem" handleClassName="rounded my-1" />
+            <Resizer
+                {...resizerLogicProps}
+                visible={false}
+                offset="0.25rem"
+                className="@max-[48rem]/logs-viewer:hidden"
+                handleClassName="rounded my-1"
+            />
         </div>
     )
 }

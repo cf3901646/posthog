@@ -226,7 +226,7 @@ function TracingSceneContents(): JSX.Element {
             : undefined
 
     return (
-        <SceneContent className="h-[calc(var(--scene-layout-rect-height,_100vh)_-_1rem)]">
+        <SceneContent className="@container/tracing-scene h-[calc(var(--scene-layout-rect-height,_100vh)_-_1rem)]">
             <SceneTitleSection
                 name="Tracing"
                 description="Monitor and analyze distributed traces to understand service performance and debug issues."
@@ -308,7 +308,7 @@ function TracingSceneContents(): JSX.Element {
                         compareActive ? 'The heatmap is unavailable while comparing time windows' : null
                     }
                 />
-                <div className="flex flex-row gap-2 flex-1 min-h-0">
+                <div className="flex flex-row gap-2 flex-1 min-h-0 @max-[48rem]/tracing-scene:flex-col">
                     {facetRailEnabled && !facetRailCollapsed && <FacetRail />}
                     <div className="flex flex-col gap-2 flex-1 min-w-0 min-h-0">
                         <TracingDisplayBar />

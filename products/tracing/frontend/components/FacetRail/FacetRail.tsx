@@ -57,7 +57,8 @@ export function FacetRail(): JSX.Element {
     return (
         <div
             ref={railRef}
-            className="relative flex flex-col shrink-0 border rounded bg-surface-primary overflow-hidden"
+            // In a narrow scene the rail stacks above the results, so the full width replaces the dragged width.
+            className="relative flex flex-col shrink-0 border rounded bg-surface-primary overflow-hidden @max-[48rem]/tracing-scene:!w-full @max-[48rem]/tracing-scene:!max-w-full @max-[48rem]/tracing-scene:max-h-48"
             // eslint-disable-next-line react/forbid-dom-props
             // The width is the user's alone: a fixed min (not min-content) so a long facet value
             // can never force the rail wider — values truncate to fit instead.
@@ -112,7 +113,13 @@ export function FacetRail(): JSX.Element {
                     </div>
                 ))}
             </div>
-            <Resizer {...resizerLogicProps} visible={false} offset="0.25rem" handleClassName="rounded my-1" />
+            <Resizer
+                {...resizerLogicProps}
+                visible={false}
+                offset="0.25rem"
+                className="@max-[48rem]/tracing-scene:hidden"
+                handleClassName="rounded my-1"
+            />
         </div>
     )
 }
