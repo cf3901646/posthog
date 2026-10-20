@@ -257,6 +257,7 @@ export function TaskComposer({
                                             {showRepositoryChip && (
                                                 <RepositorySelector
                                                     value={newTaskData.repositoryConfig}
+                                                    autoOpen={repositoryRequested}
                                                     onChange={(config) => {
                                                         if (
                                                             !config.repository &&
