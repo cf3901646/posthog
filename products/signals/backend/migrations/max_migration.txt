@@ -1,1 +1,1 @@
-0186_signalteamconfig_onboarding
+0187_signalscratchpad_trgm_fastupdate_off
