@@ -116,10 +116,12 @@ export interface tracingSceneLogicValues {
     compareFlameServiceName: string | null // tracingViewerLogic
     compareFlameSpanName: string | null // tracingViewerLogic
     errorsScope: ErrorScope | null // tracingViewerLogic
+    highlightedOperationKey: string | null // tracingViewerLogic
     inspectorTab: SpanInspectorTab // tracingViewerLogic
     isLoadingFullTrace: boolean // tracingViewerLogic
     isTraceOpen: boolean // tracingViewerLogic
     openTraceSpans: Span[] // tracingViewerLogic
+    operationsPanelExpanded: boolean // tracingViewerLogic
     selectedSpanId: string | null // tracingViewerLogic
     selectedTraceId: string | null // tracingViewerLogic
     selectedTraceLoadFailed: boolean // tracingViewerLogic
@@ -240,6 +242,9 @@ export interface tracingSceneLogicActions {
     closeTrace: () => {
         value: true
     } // tracingViewerLogic
+    highlightOperation: (operationKey: string | null) => {
+        operationKey: string | null
+    } // tracingViewerLogic
     openCompareFlame: (
         spanName: string,
         serviceName: string
@@ -269,6 +274,9 @@ export interface tracingSceneLogicActions {
     } // tracingViewerLogic
     selectSpan: (spanId: string | null) => {
         spanId: string | null
+    } // tracingViewerLogic
+    setOperationsPanelExpanded: (expanded: boolean) => {
+        expanded: boolean
     } // tracingViewerLogic
     keepSqlEditorMounted: (editorTabId: string) => {
         editorTabId: string
@@ -372,6 +380,8 @@ export const tracingSceneLogic = kea<tracingSceneLogicType>([
                 'compareFlameSpanName',
                 'compareFlameServiceName',
                 'selectedTraceLoadFailed',
+                'highlightedOperationKey',
+                'operationsPanelExpanded',
             ],
         ],
         actions: [
@@ -402,7 +412,16 @@ export const tracingSceneLogic = kea<tracingSceneLogicType>([
                 'setFilters',
             ],
             tracingViewerLogic({ id: TRACING_SCENE_VIEWER_ID }),
-            ['openTrace', 'selectSpan', 'selectInspectorTab', 'closeTrace', 'openCompareFlame', 'closeCompareFlame'],
+            [
+                'openTrace',
+                'selectSpan',
+                'selectInspectorTab',
+                'closeTrace',
+                'openCompareFlame',
+                'closeCompareFlame',
+                'highlightOperation',
+                'setOperationsPanelExpanded',
+            ],
             featureFlagLogic,
             ['setFeatureFlags'],
         ],

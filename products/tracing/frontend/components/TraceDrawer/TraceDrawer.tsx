@@ -1,7 +1,7 @@
 import { useActions, useValues } from 'kea'
 import { useMemo, useRef } from 'react'
 
-import { LemonBanner, LemonButton, LemonTag, SpinnerOverlay } from '@posthog/lemon-ui'
+import { LemonBanner, LemonButton, LemonCollapse, LemonTag, SpinnerOverlay } from '@posthog/lemon-ui'
 
 import { Resizer } from 'lib/components/Resizer/Resizer'
 import { type ResizerLogicProps, resizerLogic } from 'lib/components/Resizer/resizerLogic'
@@ -9,12 +9,14 @@ import { IconLink } from 'lib/lemon-ui/icons'
 import { LemonDrawer } from 'lib/lemon-ui/LemonDrawer/LemonDrawer'
 import { copyToClipboard } from 'lib/utils/copyToClipboard'
 import { cn } from 'lib/utils/css-classes'
+import { pluralize } from 'lib/utils/strings'
 
 import { buildAiEventSpans } from '../../aiEventSpans'
 import type { ErrorScope } from '../../errorCorrelation'
 import { useKeepMountedWhileOpen } from '../../hooks/useKeepMountedWhileOpen'
 import type { TraceIdentity } from '../../traceIdentity'
 import { absoluteTraceUrl } from '../../traceLinks'
+import { summarizeTraceOperations } from '../../traceOperations'
 import { buildServiceColorMap, formatDuration, TraceWaterfallView } from '../../TraceWaterfallView'
 import type { Span, SpanInspectorTab } from '../../types'
 import { SpanInspector } from '../SpanInspector/SpanInspector'
@@ -23,6 +25,7 @@ import { TraceAiEventsCapNotice } from './TraceAiEventsCapNotice'
 import { traceAiEventsLogic } from './traceAiEventsLogic'
 import { TraceIdentityChips } from './TraceIdentityChips'
 import { TraceLoadErrorNotice } from './TraceLoadErrorNotice'
+import { TraceOperationsTable } from './TraceOperationsTable'
 import { TraceUnavailableNotice } from './TraceUnavailableNotice'
 
 // Below this the inspector's content (the attribute KVP tables) stops being readable; clamp so a
@@ -60,6 +63,12 @@ export interface TraceDrawerProps {
     onLoadMoreSpans?: () => void
     selectedSpanId: string | null
     onSelectSpan: (spanId: string | null) => void
+    /** The operation whose spans the waterfall highlights (compareRowKey), held in tracingViewerLogic. */
+    highlightedOperationKey: string | null
+    onHighlightOperation: (operationKey: string | null) => void
+    /** The operations panel is open. Held in tracingViewerLogic so the choice sticks across traces. */
+    operationsPanelExpanded: boolean
+    onToggleOperationsPanel: (expanded: boolean) => void
     onClose: () => void
 }
 
@@ -87,6 +96,10 @@ export function TraceDrawer({
     onLoadMoreSpans,
     selectedSpanId,
     onSelectSpan,
+    highlightedOperationKey,
+    onHighlightOperation,
+    operationsPanelExpanded,
+    onToggleOperationsPanel,
     onClose,
 }: TraceDrawerProps): JSX.Element | null {
     const { aiEvents, hasMoreAiEvents, aiEventsLimit, aiEventsResponseLoading, aiEventsLoadFailed } = useValues(
@@ -108,6 +121,8 @@ export function TraceDrawer({
         const aiEventSpans = buildAiEventSpans(aiEvents, realSpans)
         return aiEventSpans.length > 0 ? [...realSpans, ...aiEventSpans] : realSpans
     }, [realSpans, aiEvents])
+    // Real spans only, because AI event rows are synthetic and have no operation of their own.
+    const operationsSummary = useMemo(() => summarizeTraceOperations(realSpans), [realSpans])
     // Waterfall|inspector split. Persisted so a user's preferred split sticks across traces;
     // desiredSize is null until the first drag, leaving the responsive default (w-2/5) in place.
     // One props object feeds both the value-read and the <Resizer>, so the logicKey can't desync.
@@ -195,12 +210,49 @@ export function TraceDrawer({
                             </LemonBanner>
                         )}
                         <TraceAiEventsCapNotice aiEvents={aiEvents} hasMore={hasMoreAiEvents} limit={aiEventsLimit} />
+                        {operationsSummary.spanCount > 0 && (
+                            <LemonCollapse
+                                size="small"
+                                className="mb-2"
+                                activeKey={operationsPanelExpanded ? 'operations' : null}
+                                onChange={(key) => onToggleOperationsPanel(key !== null)}
+                                panels={[
+                                    {
+                                        key: 'operations',
+                                        // pinned: autocapture selects on this value. LemonCollapse puts no
+                                        // data-attr on its root, so the toggle button carries it.
+                                        dataAttr: 'tracing-trace-operations',
+                                        header: (
+                                            <span className="flex items-center gap-2">
+                                                <span>Operations</span>
+                                                {/* The counts change as spans load, so they stay one text node that translation extensions skip. */}
+                                                <span className="text-xs text-muted" translate="no">
+                                                    {`${pluralize(operationsSummary.operations.length, 'operation')} · ${pluralize(operationsSummary.spanCount, 'span')}`}
+                                                </span>
+                                            </span>
+                                        ),
+                                        content: (
+                                            // Bounded so a trace with many distinct operations does not push the waterfall off screen.
+                                            <div className="max-h-60 overflow-y-auto">
+                                                <TraceOperationsTable
+                                                    operations={operationsSummary.operations}
+                                                    highlightedOperationKey={highlightedOperationKey}
+                                                    onHighlightOperation={onHighlightOperation}
+                                                    partial={hasMoreSpans}
+                                                />
+                                            </div>
+                                        ),
+                                    },
+                                ]}
+                            />
+                        )}
                         {/* Keyed by trace so a new trace resets selection + scroll state. */}
                         <TraceWaterfallView
                             key={traceId ?? ''}
                             spans={spans}
                             selectedSpanId={selectedSpanId}
                             onSpanSelect={onSelectSpan}
+                            highlightedOperationKey={highlightedOperationKey}
                             hasMore={hasMoreSpans}
                             loadingMore={loadingMoreSpans}
                             onLoadMore={onLoadMoreSpans}

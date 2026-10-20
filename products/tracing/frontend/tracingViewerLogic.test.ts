@@ -235,6 +235,22 @@ describe('tracingViewerLogic', () => {
         expect(logic.values.inspectorTab).toBe('attributes')
     })
 
+    // A stale key would dim the next trace's waterfall. A collapsed operations panel that keeps the key
+    // leaves the waterfall dimmed with nothing on screen to explain it.
+    it.each([
+        ['opening another trace', (l: typeof logic) => l.actions.openTrace('trace-y')],
+        ['closing the trace', (l: typeof logic) => l.actions.closeTrace()],
+        ['collapsing the operations panel', (l: typeof logic) => l.actions.setOperationsPanelExpanded(false)],
+    ])('clears the highlighted operation when %s', (_name, act) => {
+        logic.actions.openTrace('trace-x')
+        logic.actions.highlightOperation('web\0cache GET')
+        expect(logic.values.highlightedOperationKey).toBe('web\0cache GET')
+
+        act(logic)
+
+        expect(logic.values.highlightedOperationKey).toBeNull()
+    })
+
     describe('closeTrace', () => {
         // The attribute buttons in the drawer queue their query for when the drawer closes.
         // Without this, closing the drawer would silently drop the filter the user just added.

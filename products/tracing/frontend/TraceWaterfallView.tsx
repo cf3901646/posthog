@@ -10,6 +10,7 @@ import { SizeProps } from 'lib/components/AutoSizer/AutoSizer'
 import { Tooltip } from 'lib/lemon-ui/Tooltip'
 import { cn } from 'lib/utils/css-classes'
 
+import { compareRowKey } from './compareUtils'
 import {
     buildSpanTree,
     collectCollapsibleSpanIds,
@@ -32,6 +33,8 @@ interface TraceWaterfallViewProps {
     /** A next page of spans is being fetched. */
     loadingMore?: boolean
     onLoadMore?: () => void
+    /** Dim every span outside this operation (compareRowKey). Null dims nothing. */
+    highlightedOperationKey?: string | null
 }
 
 export function formatDuration(durationNano: number): string {
@@ -176,6 +179,7 @@ interface WaterfallRowData {
     onSelect: (spanId: string) => void
     collapsedSpanIds: Set<string>
     onToggleCollapse: (spanId: string) => void
+    highlightedOperationKey: string | null
     dynamicRowHeight: ReturnType<typeof useDynamicRowHeight>
 }
 
@@ -190,6 +194,7 @@ function WaterfallRow({
     onSelect,
     collapsedSpanIds,
     onToggleCollapse,
+    highlightedOperationKey,
 }: Omit<WaterfallRowData, 'flatSpans' | 'dynamicRowHeight'> & { node: SpanNode }): JSX.Element {
     const { span, isMissingParent = false } = node
     const hasChildren = node.children.length > 0
@@ -202,10 +207,14 @@ function WaterfallRow({
     const widthPct = Math.max(Math.min(rawWidthPct, 100 - leftPct), 0.3)
 
     const isError = span.status_code === 2
-    const isUnmatched = !span.matched_filter
+    // While an operation is highlighted, the highlight alone decides. A trace opened from a filtered
+    // list marks the spans outside the filter as unmatched, and the operation the user picked can be
+    // one of those, so the list filter must not dim it.
+    const isDimmed =
+        highlightedOperationKey != null ? compareRowKey(span) !== highlightedOperationKey : !span.matched_filter
     const seriesIndex = serviceColorMap.get(span.service_name) ?? 0
     const seriesColor = isError ? ERROR_COLOR : getSeriesColor(seriesIndex)
-    const barColor = isUnmatched ? 'var(--border)' : seriesColor
+    const barColor = isDimmed ? 'var(--border)' : seriesColor
     // Select by span_id (the OTel id the tree is keyed by, and what the inspector/URL resolve),
     // not the ClickHouse row uuid.
     const isSelected = selectedSpanId === span.span_id
@@ -269,7 +278,7 @@ function WaterfallRow({
                         <span
                             className={`text-xs truncate ${isError || isMissingParent ? 'text-danger' : ''} ${
                                 isSelected || isError ? 'font-semibold' : 'font-medium'
-                            } ${isUnmatched ? 'opacity-40' : ''}`}
+                            } ${isDimmed ? 'opacity-40' : ''}`}
                         >
                             {span.name}
                         </span>
@@ -326,7 +335,7 @@ function WaterfallRow({
                                 }}
                             >
                                 <span
-                                    className={`text-[11px] truncate whitespace-nowrap flex items-center gap-1.5 ${isUnmatched ? 'opacity-40' : ''}`}
+                                    className={`text-[11px] truncate whitespace-nowrap flex items-center gap-1.5 ${isDimmed ? 'opacity-40' : ''}`}
                                 >
                                     <span className="text-muted-alt font-medium">{span.service_name}</span>
                                     <span className="text-muted">{formatDuration(span.duration_nano)}</span>
@@ -354,6 +363,7 @@ function WaterfallListRow({
     onSelect,
     collapsedSpanIds,
     onToggleCollapse,
+    highlightedOperationKey,
     dynamicRowHeight,
 }: {
     ariaAttributes: { 'aria-posinset': number; 'aria-setsize': number; role: 'listitem' }
@@ -383,6 +393,7 @@ function WaterfallListRow({
                 onSelect={onSelect}
                 collapsedSpanIds={collapsedSpanIds}
                 onToggleCollapse={onToggleCollapse}
+                highlightedOperationKey={highlightedOperationKey}
             />
         </div>
     )
@@ -395,6 +406,7 @@ export function TraceWaterfallView({
     hasMore = false,
     loadingMore = false,
     onLoadMore,
+    highlightedOperationKey = null,
 }: TraceWaterfallViewProps): JSX.Element {
     const [cursorPct, setCursorPct] = useState<number | null>(null)
     const [labelColumnWidth, setLabelColumnWidth] = useState(
@@ -475,6 +487,27 @@ export function TraceWaterfallView({
             scrolledToInitialRef.current = true
         }
     }, [flatSpans, listRef])
+
+    // The first span of a large operation often sits far down the tree, so a click on the operations
+    // table must scroll that span into view. The `smart` alignment keeps the list still when that span
+    // is already visible, so the click does not move the rows the user is reading. The ref holds the
+    // last key that scrolled, so that a collapse, an expand, or a new page of spans does not pull the
+    // list back to the operation.
+    const lastScrolledOperationKeyRef = useRef<string | null>(null)
+    useEffect(() => {
+        if (highlightedOperationKey == null) {
+            lastScrolledOperationKeyRef.current = null
+            return
+        }
+        if (lastScrolledOperationKeyRef.current === highlightedOperationKey) {
+            return
+        }
+        const index = flatSpans.findIndex((node) => compareRowKey(node.span) === highlightedOperationKey)
+        if (index >= 0) {
+            listRef.current?.scrollToRow({ index, align: 'smart' })
+            lastScrolledOperationKeyRef.current = highlightedOperationKey
+        }
+    }, [highlightedOperationKey, flatSpans, listRef])
 
     // Controlled: emit the new selection (toggling off if the same span is clicked) and let the
     // scene flow it back via `selectedSpanId`. No internal copy, so highlight can't drift from the URL.
@@ -710,6 +743,7 @@ export function TraceWaterfallView({
                             onSelect: handleSelect,
                             collapsedSpanIds,
                             onToggleCollapse: handleToggleCollapse,
+                            highlightedOperationKey,
                             dynamicRowHeight,
                         }}
                         onRowsRendered={handleRowsRendered}

@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, within } from '@testing-library/react'
 
+import { compareRowKey } from './compareUtils'
 import { TraceWaterfallView } from './TraceWaterfallView'
 import type { Span } from './types'
 
@@ -97,6 +98,27 @@ describe('TraceWaterfallView', () => {
         fireEvent.click(within(container).getByLabelText('Expand all spans'))
         expect(within(container).queryAllByText('child-operation').length).toBeGreaterThan(0)
     })
+
+    // The operations table highlights by compareRowKey. If the waterfall matches spans on a different
+    // key, a click on a table row dims the wrong spans. A trace opened from a filtered list marks the
+    // spans outside the filter as unmatched, and the list filter must not hide the highlighted operation.
+    it.each([
+        ['inside the list filter', child],
+        ['outside the list filter', { ...child, matched_filter: false }],
+    ])(
+        'with the highlighted span %s, dims every span outside the highlighted operation and nothing before',
+        (_name, highlightedChild) => {
+            const spans = [root, highlightedChild]
+            const { container, rerender } = render(<TraceWaterfallView spans={spans} />)
+            const label = (name: string): HTMLElement => within(container).getAllByText(name)[0]
+            expect(label('root-operation').className).not.toContain('opacity-40')
+
+            rerender(<TraceWaterfallView spans={spans} highlightedOperationKey={compareRowKey(highlightedChild)} />)
+
+            expect(label('root-operation').className).toContain('opacity-40')
+            expect(label('child-operation').className).not.toContain('opacity-40')
+        }
+    )
 
     it('does not render a collapse toggle for leaf spans', () => {
         const { container } = render(<TraceWaterfallView spans={[root]} />)

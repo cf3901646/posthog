@@ -56,6 +56,10 @@ describe('TraceDrawer', () => {
                     filtersActive={false}
                     selectedSpanId={null}
                     onSelectSpan={jest.fn()}
+                    highlightedOperationKey={null}
+                    onHighlightOperation={jest.fn()}
+                    operationsPanelExpanded
+                    onToggleOperationsPanel={jest.fn()}
                     onClose={jest.fn()}
                     {...props}
                 />
