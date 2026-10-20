@@ -12119,6 +12119,7 @@ export namespace Schemas {
      * * `GoogleAdMob` - GoogleAdMob
      * * `Klar` - Klar
      * * `ConectoCRM` - ConectoCRM
+     * * `Particle` - Particle
      */
     export type ExternalDataSourceTypeEnum =
         | "Ashby"
@@ -13521,7 +13522,8 @@ export namespace Schemas {
         | "Testomatio"
         | "GoogleAdMob"
         | "Klar"
-        | "ConectoCRM";
+        | "ConectoCRM"
+        | "Particle";
     /**
      * * `web` - web
      * * `api` - api
@@ -14933,6 +14935,7 @@ export namespace Schemas {
          * * `GoogleAdMob` - GoogleAdMob
          * * `Klar` - Klar
          * * `ConectoCRM` - ConectoCRM
+         * * `Particle` - Particle
          */
         source_type: ExternalDataSourceTypeEnum;
         /**
