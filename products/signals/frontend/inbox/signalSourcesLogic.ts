@@ -518,6 +518,7 @@ export interface signalSourcesLogicMeta {
                 | 'bugsnag'
                 | 'canny'
                 | 'dixa'
+                | 'dynamics365'
                 | 'featurebase'
                 | 'firehydrant'
                 | 'freshdesk'
@@ -557,7 +558,8 @@ export interface signalSourcesLogicMeta {
                 | 'squadcast'
                 | 'uservoice'
                 | 'xmatters'
-                | 'zendesk',
+                | 'zendesk'
+                | 'zoho_crm',
                 ExternalSignalSourceState
             >,
             ciSignalsConfig: CISignalsConfigApi | null
