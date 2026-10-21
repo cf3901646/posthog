@@ -858,7 +858,9 @@ tools:
             Rollout conditions, variants, and payloads live in the structured `filters` param, and sending `filters`
             replaces the whole object, so read the flag first and merge your change. Each release condition you read has
             a `condition_id`. Send it unchanged on every condition you keep, edit, or move, and leave it off a new
-            condition. Once any condition has a `condition_id`, a condition without one is treated as new. This tool
+            condition. A `condition_id` belongs to the flag you read it from, so leave it off a condition copied from
+            another flag or an experiment. Once any condition has a `condition_id`, a condition without one is treated
+            as new. This tool
             uses the ID to restore each condition's property types and targeting, so a reorder, deletion, or edit keeps
             every condition on the persons or group type it targeted. If a `condition_id` matches no condition on the
             flag, the flag may have changed after your read, and the update is refused. Read the flag again and rebuild

@@ -126,7 +126,7 @@ describe('update-feature-flag preserving groups', () => {
         expect(patchGroups.map((group) => group.properties[0]?.group_type_index)).toEqual([1, 0])
         expect(patchGroups.some((group) => 'condition_id' in group)).toBe(false)
         expect(result.filters.groups.map((group) => (group as { condition_id?: string }).condition_id)).toEqual(
-            storedGroups.map(conditionId)
+            storedGroups.map((group) => conditionId(group))
         )
     })
 

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
+import { ToolInputValidationError } from '@/lib/errors'
 import { isRecord } from '@/lib/plain-object'
 import { getToolByName } from '@/shared/test-utils'
 import { conditionId, withConditionIds } from '@/tools/featureFlags/conditionIds'
@@ -182,10 +183,24 @@ describe('condition ids', () => {
         expect(conditionId(changed)).not.toBe(conditionId(stored))
     })
 
-    it('tells an absent aggregation from an explicit null', () => {
+    it.each([
+        { name: 'a group type', flagLevel: 0 },
+        { name: 'persons', flagLevel: null },
+    ])(
+        'keeps the ID of a condition without an aggregation when the API writes a flag level of $name into it',
+        ({ flagLevel }) => {
+            const absent = planOn(0, 'pro')
+
+            expect(conditionId({ ...absent, aggregation_group_type_index: flagLevel })).toBe(
+                conditionId(absent, flagLevel)
+            )
+        }
+    )
+
+    it('tells an explicit null aggregation from an absent one on a flag that aggregates on a group type', () => {
         const absent = planOn(0, 'pro')
 
-        expect(conditionId({ ...absent, aggregation_group_type_index: null })).not.toBe(conditionId(absent))
+        expect(conditionId({ ...absent, aggregation_group_type_index: null }, 0)).not.toBe(conditionId(absent, 0))
     })
 
     it.each([
@@ -215,12 +230,14 @@ describe('condition ids', () => {
     ])('adds an ID to each condition of $name and changes nothing else', ({ value }) => {
         const result = withConditionIds(structuredClone(value))
 
-        expect(conditionsIn(result).map((group) => group.condition_id)).toEqual(conditionsIn(value).map(conditionId))
+        expect(conditionsIn(result).map((group) => group.condition_id)).toEqual(
+            conditionsIn(value).map((group) => conditionId(group))
+        )
         expect(withoutConditionIds(result)).toEqual(withoutConditionIds(value))
     })
 
     it.each(CONDITION_TOOLS)('$tool returns each condition with its ID', async ({ tool, params, responses }) => {
-        const expected = conditionsIn(responses.at(-1)).map(conditionId)
+        const expected = conditionsIn(responses.at(-1)).map((group) => conditionId(group))
 
         const result = await getToolByName(tool).handler(contextReturning(responses), params)
 
@@ -337,6 +354,64 @@ describe('condition ids', () => {
             ],
         },
         {
+            name: 'two group sets with one ID hold a key as person and cohort in opposite orders and the agent edits one value',
+            stored: [
+                {
+                    aggregation_group_type_index: 0,
+                    properties: [
+                        { key: 'id', type: 'person', operator: 'exact', value: 'x' },
+                        { key: 'id', type: 'cohort', operator: 'exact', value: 7 },
+                    ],
+                    rollout_percentage: 100,
+                },
+                {
+                    aggregation_group_type_index: 0,
+                    properties: [
+                        { key: 'id', type: 'cohort', operator: 'exact', value: 7 },
+                        { key: 'id', type: 'person', operator: 'exact', value: 'x' },
+                    ],
+                    rollout_percentage: 50,
+                },
+            ],
+            sent: (stored: FlagConditionGroup[]) => [
+                echoWithId(stored[0]!),
+                echoWithId(stored[1]!, {
+                    properties: [
+                        { key: 'id', operator: 'exact', value: 8 },
+                        { key: 'id', operator: 'exact', value: 'x' },
+                    ],
+                }),
+            ],
+            expected: [
+                [0, ['person', undefined], ['cohort', undefined]],
+                [0, [undefined, undefined], ['person', undefined]],
+            ],
+        },
+        {
+            name: 'a kept condition gains a key that another stored set holds as a group property',
+            stored: [
+                personPlan('free'),
+                {
+                    properties: [{ key: 'region', type: 'group', group_type_index: 1, operator: 'exact', value: 'us' }],
+                    rollout_percentage: 100,
+                },
+            ],
+            sent: (stored: FlagConditionGroup[]) => [
+                echoWithId(stored[0]!, {
+                    properties: [
+                        { key: 'plan', operator: 'exact', value: 'free' },
+                        { key: 'country', operator: 'exact', value: 'US' },
+                        { key: 'region', operator: 'exact', value: 'eu' },
+                    ],
+                }),
+                echoWithId(stored[1]!),
+            ],
+            expected: [
+                [null, ['person', undefined], ['person', undefined], [undefined, undefined]],
+                [null, ['group', 1]],
+            ],
+        },
+        {
             name: 'a new set without an ID goes in front of the stored sets',
             stored: [planOn(0, 'enterprise'), planOn(1, 'pro')],
             sent: (stored: FlagConditionGroup[]) => [
@@ -360,12 +435,20 @@ describe('condition ids', () => {
     it('refuses a condition ID that matches no stored condition', () => {
         const stored = [planOn(0, 'enterprise'), planOn(1, 'pro')]
 
-        expect(() =>
+        let error: unknown
+        try {
             preserveGroupTargetingFilters(
                 { groups: stored },
                 { groups: [echoWithId(stored[0]!), echoWithId(planOn(2, 'pro'))] }
             )
-        ).toThrow(/filters\.groups\[1\]/)
+        } catch (caught) {
+            error = caught
+        }
+
+        expect(error).toBeInstanceOf(ToolInputValidationError)
+        expect((error as ToolInputValidationError).fields).toEqual(['filters.groups.N.condition_id:stale_condition_id'])
+        expect((error as Error).message).toMatch(/on filters\.groups\[1\] matches no condition/)
+        expect((error as Error).message).toMatch(/copied this condition from another flag .* remove its condition_id/)
     })
 
     it('refuses a new condition in front of the stored ones on a mixed flag when it states no aggregation', () => {

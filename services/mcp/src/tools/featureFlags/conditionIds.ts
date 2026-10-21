@@ -4,12 +4,17 @@ import { canonicalJson, hasKey, isRecord } from '@/lib/plain-object'
 
 /**
  * The ID covers only what the update merge restores from: the key, type, group_type_index,
- * operator, and value of each property, and the condition's own aggregation_group_type_index.
+ * operator, and value of each property, and the aggregation the condition uses.
  * An edit to rollout, variant, or description between an agent's read and its write keeps the ID.
  * A read-time annotation such as cohort_name does not change it either. Two stored conditions with
  * the same ID restore the same types, so the merge does not need to tell them apart.
+ *
+ * A condition without an aggregation_group_type_index key aggregates on the flag level. Every API
+ * write that sends filters copies the flag level into each such condition (validate_filters in
+ * products/feature_flags/backend/api/feature_flag.py). The ID therefore hashes the flag level for an
+ * absent key, so that write does not change the ID.
  */
-export function conditionId(group: Record<string, unknown>): string {
+export function conditionId(group: Record<string, unknown>, flagLevelGroupIndex?: unknown): string {
     const properties = Array.isArray(group.properties) ? group.properties.filter(isRecord) : []
     const filters = properties
         .map((prop) =>
@@ -24,7 +29,9 @@ export function conditionId(group: Record<string, unknown>): string {
         .sort()
     const aggregation = hasKey(group, 'aggregation_group_type_index')
         ? (group.aggregation_group_type_index ?? null)
-        : 'absent'
+        : typeof flagLevelGroupIndex === 'number' && Number.isFinite(flagLevelGroupIndex)
+          ? flagLevelGroupIndex
+          : null
     return createHash('sha256')
         .update(canonicalJson([aggregation, filters]))
         .digest('hex')
@@ -51,12 +58,13 @@ export function withConditionIds<T>(value: T): T {
     if (!isRecord(value.filters) || !Array.isArray(value.filters.groups)) {
         return value
     }
+    const flagLevelGroupIndex = value.filters.aggregation_group_type_index
     const groups = value.filters.groups.map((group: unknown) => {
         if (!isRecord(group)) {
             return group
         }
         const { condition_id: _stored, ...rest } = group
-        return { condition_id: conditionId(group), ...rest }
+        return { condition_id: conditionId(group, flagLevelGroupIndex), ...rest }
     })
     return { ...value, filters: { ...value.filters, groups } }
 }
