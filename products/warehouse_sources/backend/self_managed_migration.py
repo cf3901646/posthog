@@ -289,10 +289,7 @@ def _migration_schemas(team_id: int | None, table_ids: Iterable[str]) -> dict[st
         queryset = queryset.filter(team_id=team_id)
     ids = list(table_ids)
     if ids:
-        # nosemgrep: orm-field-injection -- the key is a module constant, not user input
-        queryset = queryset.filter(
-            **{f"sync_type_config__schema_metadata__{SCHEMA_SELF_MANAGED_TABLE_METADATA_KEY}__table_id__in": ids}
-        )
+        queryset = queryset.filter(sync_type_config__schema_metadata__self_managed_table__table_id__in=ids)
     by_table: dict[str, list[ExternalDataSchema]] = defaultdict(list)
     for schema in queryset:
         ref = self_managed_table_ref(schema)
@@ -407,10 +404,8 @@ def _find_or_create_source(table: DataWarehouseTable, plan: _TablePlan) -> Exter
         ExternalDataSource.objects.filter(
             team_id=table.team_id,
             source_type=plan.source.source_type,
-            **{
-                f"connection_metadata__{MIGRATION_MARKER_KEY}__group_key": plan.location.group_key,
-                f"connection_metadata__{MIGRATION_MARKER_KEY}__credential_id": str(table.credential_id),
-            },
+            connection_metadata__self_managed_migration__group_key=plan.location.group_key,
+            connection_metadata__self_managed_migration__credential_id=str(table.credential_id),
         )
         .exclude(deleted=True)
         .order_by("created_at")
