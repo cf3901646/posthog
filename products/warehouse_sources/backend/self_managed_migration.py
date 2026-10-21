@@ -289,6 +289,7 @@ def _migration_schemas(team_id: int | None, table_ids: Iterable[str]) -> dict[st
         queryset = queryset.filter(team_id=team_id)
     ids = list(table_ids)
     if ids:
+        # nosemgrep: orm-field-injection -- the key is a module constant, not user input
         queryset = queryset.filter(
             **{f"sync_type_config__schema_metadata__{SCHEMA_SELF_MANAGED_TABLE_METADATA_KEY}__table_id__in": ids}
         )
