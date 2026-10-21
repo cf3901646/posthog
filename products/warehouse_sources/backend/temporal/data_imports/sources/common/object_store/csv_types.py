@@ -271,11 +271,12 @@ def _parse_timestamp(values: pa.Array, tz: str | None) -> pa.Array:
     which Arrow refuses to read as microseconds. Those values are read as nanoseconds first and
     then truncated to the microseconds a Delta table stores.
     """
+    micros = pa.timestamp("us") if tz is None else pa.timestamp("us", tz=tz)
+    nanos = pa.timestamp("ns") if tz is None else pa.timestamp("ns", tz=tz)
     try:
-        return pc.cast(values, pa.timestamp("us", tz=tz))
+        return pc.cast(values, micros)
     except pa.ArrowInvalid:
-        precise = pc.cast(values, pa.timestamp("ns", tz=tz))
-        return pc.cast(precise, pa.timestamp("us", tz=tz), safe=False)
+        return pc.cast(pc.cast(values, nanos), micros, safe=False)
 
 
 def _parse_datetime(timezone: str | None) -> Callable[[pa.Array], pa.Array]:
@@ -290,7 +291,9 @@ def _parse_datetime(timezone: str | None) -> Callable[[pa.Array], pa.Array]:
         if timezone is None:
             return pc.cast(naive, target)
         # A local time that a clock change skips or repeats takes the earlier instant.
-        localized = pc.assume_timezone(naive, timezone=timezone, ambiguous="earliest", nonexistent="earliest")
+        localized = pc.assume_timezone(
+            cast(Any, naive), timezone=timezone, ambiguous="earliest", nonexistent="earliest"
+        )
         return pc.cast(localized, target)
 
     return parse
@@ -320,7 +323,7 @@ def cast_csv_columns(table: pa.Table, column_types: tuple[CsvColumnType, ...]) -
         index = table.schema.get_field_index(column_type.name)
         values = pc.utf8_trim_whitespace(table.column(index).combine_chunks())
         # A quoted empty field is an empty string, which no typed column can hold.
-        values = pc.if_else(pc.equal(values, ""), pa.scalar(None, pa.string()), values)
+        values = pc.if_else(pc.equal(values, pa.scalar("", pa.string())), pa.scalar(None, pa.string()), values)
         target = column_type.arrow_type
         parse = _parser(column_type)
         try:

@@ -14,7 +14,7 @@ table's `options`. Running the migration again therefore continues where it stop
 
 import uuid
 import dataclasses
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from enum import StrEnum
 from typing import Any, Literal
 
@@ -180,6 +180,7 @@ def resolve_s3_bucket_region(bucket: str, credential: SelfManagedCredential) -> 
             retries={"max_attempts": MAX_REQUEST_ATTEMPTS, "mode": "standard"},
         ),
     )
+    response: Mapping[str, Any]
     try:
         response = client.head_bucket(Bucket=bucket)
     except ClientError as e:
@@ -470,6 +471,12 @@ def _find_or_create_source(table: DataWarehouseTable, plan: _TablePlan) -> Exter
     return source
 
 
+def _credential_id(table: DataWarehouseTable) -> uuid.UUID:
+    if table.credential_id is None:
+        raise ValueError(f"Table {table.id} has no credential to migrate with")
+    return table.credential_id
+
+
 def _ensure_schema(table: DataWarehouseTable, plan: _TablePlan) -> ExternalDataSchema:
     """The table's migration schema, created with its source when there is none yet.
 
@@ -477,7 +484,7 @@ def _ensure_schema(table: DataWarehouseTable, plan: _TablePlan) -> ExternalDataS
     locks it, so two runs can't create two sources or two schemas for the same table.
     """
     with transaction.atomic():
-        DataWarehouseCredential.objects.select_for_update().get(team_id=table.team_id, pk=table.credential_id)
+        DataWarehouseCredential.objects.select_for_update().get(team_id=table.team_id, pk=_credential_id(table))
         existing = (
             ExternalDataSchema.objects.filter(team_id=table.team_id, table_id=table.id)
             .exclude(deleted=True)

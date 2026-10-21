@@ -803,7 +803,7 @@ class TestCsvColumnTypes:
 
         result = cast_csv_columns(table, (CsvColumnType(name="value", kind="integer"),))
 
-        expected = [None if value in (None, "x") else int(value) for value in values]
+        expected = [None if value is None or value == "x" else int(value) for value in values]
         assert result.table.column("value").to_pylist() == expected
         bad_non_null = sum(1 for value in values if value == "x")
         assert result.nulled_values == ({"value": bad_non_null} if bad_non_null else {})

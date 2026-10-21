@@ -159,7 +159,7 @@ class TestSelfManagedMigration(BaseTest):
         assert ExternalDataSource.objects.filter(team=self.team).count() == 3
         assert source_of(other_bucket).job_inputs["bucket"] == "archive"
         assert source_of(other_key).job_inputs["access_key_id"] == "AKIASECOND"
-        assert source_of(virtual_hosted).connection_metadata[MIGRATION_MARKER_KEY] == {
+        assert (source_of(virtual_hosted).connection_metadata or {})[MIGRATION_MARKER_KEY] == {
             "group_key": "s3/eu-west-1/exports",
             "credential_id": str(self.credential.pk),
         }
