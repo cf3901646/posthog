@@ -1661,7 +1661,7 @@ class TestGoogleAdsQueryConstruction:
             "ORDER BY segments.date ASC"
         )
         assert all("2100-01-01" not in q for q in queries)
-        assert response.sort_mode == "asc"
+        assert response.sort_mode is None
 
     def test_lookback_overlap_cannot_consume_a_whole_run(self):
         # Spending the whole budget on lookback overlap leaves the cursor unmoved, so the next run
@@ -1848,6 +1848,34 @@ class TestGoogleAdsQueryConstruction:
             "WHERE segments.date >= '1970-01-01' AND segments.date < '2026-07-18' "
             "AND metrics.impressions > 0 ORDER BY segments.date ASC LIMIT 1"
         )
+
+    @pytest.mark.parametrize(
+        "skip_removed,expected_query",
+        [
+            (False, "SELECT ad_group_criterion.criterion_id FROM ad_group_criterion"),
+            (
+                True,
+                "SELECT ad_group_criterion.criterion_id FROM ad_group_criterion "
+                "WHERE ad_group_criterion.status != 'REMOVED'",
+            ),
+        ],
+    )
+    def test_skip_removed_filters_only_when_enabled(self, skip_removed: bool, expected_query: str) -> None:
+        table = GoogleAdsTable(
+            name="ad_group_criterion",
+            alias="ad_group_criterion",
+            columns=[_string_column("ad_group_criterion.criterion_id")],
+            parents=None,
+            requires_filter=False,
+            primary_key=["ad_group_criterion.criterion_id"],
+            should_sync_default=False,
+            description=None,
+            removed_filter="ad_group_criterion.status != 'REMOVED'",
+        )
+
+        _response, queries = self._run_source(table, skip_removed=skip_removed)
+
+        assert queries == [expected_query]
 
     def test_full_refresh_report_table_scans_the_full_range_without_windows(self):
         # A full-refresh pipeline persists no cursor, so a budgeted windowed drain restarts from
