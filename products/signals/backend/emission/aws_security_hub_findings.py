@@ -1,7 +1,8 @@
 """Signal emitter for aws_security_hub `findings` (record kind: scanner_finding).
 
 `severity`, `compliance` and `workflow` are JSON objects with PascalCase keys. `created_at` is a datetime.
-The filter drops archived, resolved, suppressed and passed-check findings.
+The filter drops archived, resolved, suppressed and passed-check findings. Threat findings have no
+`compliance` object, so NULL statuses are coalesced to '' and kept.
 
 The connector keys findings on (product_arn, aws_account_id, region, id), because `id` alone is only
 unique within a product, so the signal source id is built from the full key. A null `id` yields a null
@@ -41,8 +42,8 @@ AWS_SECURITY_HUB_CONFIG = SignalSourceTableConfig(
     fields=AWS_SECURITY_HUB_FIELDS,
     where_clause=(
         "ifNull(record_state, 'ACTIVE') != 'ARCHIVED'"
-        " AND JSONExtractString(workflow, 'Status') NOT IN ('RESOLVED', 'SUPPRESSED')"
-        " AND JSONExtractString(compliance, 'Status') != 'PASSED'"
+        " AND ifNull(JSONExtractString(workflow, 'Status'), '') NOT IN ('RESOLVED', 'SUPPRESSED')"
+        " AND ifNull(JSONExtractString(compliance, 'Status'), '') != 'PASSED'"
     ),
     max_records=200,
     first_sync_lookback_days=1,
