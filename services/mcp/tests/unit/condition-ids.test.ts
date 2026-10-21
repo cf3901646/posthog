@@ -1,9 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { ToolInputValidationError } from '@/lib/errors'
 import { isRecord } from '@/lib/plain-object'
 import { getToolByName } from '@/shared/test-utils'
-import { conditionId, withConditionIds } from '@/tools/featureFlags/conditionIds'
+import { withConditionIds } from '@/tools/featureFlags/conditionIds'
 import {
     type FlagConditionGroup,
     type FlagFilters,
@@ -24,12 +23,52 @@ const personPlan = (value: string): FlagConditionGroup => ({
     rollout_percentage: 100,
 })
 
+function idOnRead(group: FlagConditionGroup, flagLevel?: number | null): unknown {
+    const [read] = conditionsIn(
+        withConditionIds({ filters: { groups: [group], aggregation_group_type_index: flagLevel } })
+    )
+    return read?.condition_id
+}
+
 function echoWithId(group: FlagConditionGroup, overrides: Partial<FlagConditionGroup> = {}): FlagConditionGroup {
     return {
-        condition_id: conditionId(group),
+        condition_id: idOnRead(group),
         properties: (group.properties ?? []).map(({ key, operator, value }) => ({ key, operator, value })),
         rollout_percentage: group.rollout_percentage,
         ...overrides,
+    }
+}
+
+type MergeRow = {
+    name: string
+    stored: FlagConditionGroup[]
+    sent: (stored: FlagConditionGroup[]) => FlagConditionGroup[]
+    expected: unknown[][]
+}
+
+function personAndCohortInOppositeOrders(aggregation: number | undefined): MergeRow {
+    const ownAggregation = aggregation === undefined ? {} : { aggregation_group_type_index: aggregation }
+    const person = { key: 'id', type: 'person', operator: 'exact', value: 'x' }
+    const cohort = { key: 'id', type: 'cohort', operator: 'exact', value: 7 }
+    return {
+        name: `two ${aggregation === undefined ? 'person' : 'group'} sets with one ID hold a key as person and cohort in opposite orders and the agent edits one value`,
+        stored: [
+            { ...ownAggregation, properties: [person, cohort], rollout_percentage: 100 },
+            { ...ownAggregation, properties: [cohort, person], rollout_percentage: 50 },
+        ],
+        sent: (stored: FlagConditionGroup[]) => [
+            echoWithId(stored[0]!),
+            echoWithId(stored[1]!, {
+                properties: [
+                    { key: 'id', operator: 'exact', value: 8 },
+                    { key: 'id', operator: 'exact', value: 'x' },
+                ],
+            }),
+        ],
+        expected: [
+            [aggregation ?? null, ['person', undefined], ['cohort', undefined]],
+            [aggregation ?? null, [undefined, undefined], ['person', undefined]],
+        ],
     }
 }
 
@@ -168,7 +207,7 @@ describe('condition ids', () => {
             sort_key: 'abc-123',
         }
 
-        expect(conditionId(rendered)).toBe(conditionId(stored))
+        expect(idOnRead(rendered)).toBe(idOnRead(stored))
     })
 
     it.each([
@@ -180,7 +219,7 @@ describe('condition ids', () => {
         const stored = planOn(0, 'pro')
         const changed = { ...stored, properties: [{ ...stored.properties![0]!, ...change }] }
 
-        expect(conditionId(changed)).not.toBe(conditionId(stored))
+        expect(idOnRead(changed)).not.toBe(idOnRead(stored))
     })
 
     it.each([
@@ -191,8 +230,8 @@ describe('condition ids', () => {
         ({ flagLevel }) => {
             const absent = planOn(0, 'pro')
 
-            expect(conditionId({ ...absent, aggregation_group_type_index: flagLevel })).toBe(
-                conditionId(absent, flagLevel)
+            expect(idOnRead({ ...absent, aggregation_group_type_index: flagLevel }, flagLevel)).toBe(
+                idOnRead(absent, flagLevel)
             )
         }
     )
@@ -200,7 +239,7 @@ describe('condition ids', () => {
     it('tells an explicit null aggregation from an absent one on a flag that aggregates on a group type', () => {
         const absent = planOn(0, 'pro')
 
-        expect(conditionId({ ...absent, aggregation_group_type_index: null }, 0)).not.toBe(conditionId(absent, 0))
+        expect(idOnRead({ ...absent, aggregation_group_type_index: null }, 0)).not.toBe(idOnRead(absent, 0))
     })
 
     it.each([
@@ -231,13 +270,13 @@ describe('condition ids', () => {
         const result = withConditionIds(structuredClone(value))
 
         expect(conditionsIn(result).map((group) => group.condition_id)).toEqual(
-            conditionsIn(value).map((group) => conditionId(group))
+            conditionsIn(value).map((group) => idOnRead(group))
         )
         expect(withoutConditionIds(result)).toEqual(withoutConditionIds(value))
     })
 
     it.each(CONDITION_TOOLS)('$tool returns each condition with its ID', async ({ tool, params, responses }) => {
-        const expected = conditionsIn(responses.at(-1)).map((group) => conditionId(group))
+        const expected = conditionsIn(responses.at(-1)).map((group) => idOnRead(group))
 
         const result = await getToolByName(tool).handler(contextReturning(responses), params)
 
@@ -321,72 +360,7 @@ describe('condition ids', () => {
                 [null, [undefined, undefined]],
             ],
         },
-        {
-            name: 'two sets with one ID hold a key as person and cohort in opposite orders and the agent edits one value',
-            stored: [
-                {
-                    properties: [
-                        { key: 'id', type: 'person', operator: 'exact', value: 'x' },
-                        { key: 'id', type: 'cohort', operator: 'exact', value: 7 },
-                    ],
-                    rollout_percentage: 100,
-                },
-                {
-                    properties: [
-                        { key: 'id', type: 'cohort', operator: 'exact', value: 7 },
-                        { key: 'id', type: 'person', operator: 'exact', value: 'x' },
-                    ],
-                    rollout_percentage: 50,
-                },
-            ],
-            sent: (stored: FlagConditionGroup[]) => [
-                echoWithId(stored[0]!),
-                echoWithId(stored[1]!, {
-                    properties: [
-                        { key: 'id', operator: 'exact', value: 8 },
-                        { key: 'id', operator: 'exact', value: 'x' },
-                    ],
-                }),
-            ],
-            expected: [
-                [null, ['person', undefined], ['cohort', undefined]],
-                [null, [undefined, undefined], ['person', undefined]],
-            ],
-        },
-        {
-            name: 'two group sets with one ID hold a key as person and cohort in opposite orders and the agent edits one value',
-            stored: [
-                {
-                    aggregation_group_type_index: 0,
-                    properties: [
-                        { key: 'id', type: 'person', operator: 'exact', value: 'x' },
-                        { key: 'id', type: 'cohort', operator: 'exact', value: 7 },
-                    ],
-                    rollout_percentage: 100,
-                },
-                {
-                    aggregation_group_type_index: 0,
-                    properties: [
-                        { key: 'id', type: 'cohort', operator: 'exact', value: 7 },
-                        { key: 'id', type: 'person', operator: 'exact', value: 'x' },
-                    ],
-                    rollout_percentage: 50,
-                },
-            ],
-            sent: (stored: FlagConditionGroup[]) => [
-                echoWithId(stored[0]!),
-                echoWithId(stored[1]!, {
-                    properties: [
-                        { key: 'id', operator: 'exact', value: 8 },
-                        { key: 'id', operator: 'exact', value: 'x' },
-                    ],
-                }),
-            ],
-            expected: [
-                [0, ['person', undefined], ['cohort', undefined]],
-                [0, [undefined, undefined], ['person', undefined]],
-            ],
-        },
+        ...[undefined, 0].map(personAndCohortInOppositeOrders),
         {
             name: 'a kept condition gains a key that another stored set holds as a group property',
             stored: [
@@ -435,20 +409,19 @@ describe('condition ids', () => {
     it('refuses a condition ID that matches no stored condition', () => {
         const stored = [planOn(0, 'enterprise'), planOn(1, 'pro')]
 
-        let error: unknown
-        try {
+        expect(() =>
             preserveGroupTargetingFilters(
                 { groups: stored },
                 { groups: [echoWithId(stored[0]!), echoWithId(planOn(2, 'pro'))] }
             )
-        } catch (caught) {
-            error = caught
-        }
-
-        expect(error).toBeInstanceOf(ToolInputValidationError)
-        expect((error as ToolInputValidationError).fields).toEqual(['filters.groups.N.condition_id:stale_condition_id'])
-        expect((error as Error).message).toMatch(/on filters\.groups\[1\] matches no condition/)
-        expect((error as Error).message).toMatch(/copied this condition from another flag .* remove its condition_id/)
+        ).toThrow(
+            expect.objectContaining({
+                fields: ['filters.groups.N.condition_id:stale_condition_id'],
+                message: expect.stringMatching(
+                    /on filters\.groups\[1\] matches no condition.*copied this condition from another flag .* remove its condition_id/
+                ),
+            })
+        )
     })
 
     it('refuses a new condition in front of the stored ones on a mixed flag when it states no aggregation', () => {

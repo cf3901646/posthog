@@ -77,6 +77,7 @@ import { isDeepStrictEqual } from 'node:util'
 import { ToolInputValidationError } from '@/lib/errors'
 import { canonicalJson, hasKey, isRecord } from '@/lib/plain-object'
 
+import { explicitlyClearsAggregation, isPresentGroupIndex, resolveGroupIndex, storedAggregation } from './aggregation'
 import { conditionId } from './conditionIds'
 
 export type FlagProperty = {
@@ -109,10 +110,6 @@ function isPresentType(type: unknown): type is string {
     return typeof type === 'string' && type.length > 0
 }
 
-function isPresentGroupIndex(index: unknown): index is number {
-    return typeof index === 'number' && Number.isFinite(index)
-}
-
 /**
  * `!== 'group'` is the complement of PERSON_AGGREGATED_PROPERTY_TYPES in filters_validation.py.
  * It holds only while 'group' is the sole type outside that tuple. A Python test asserts that:
@@ -121,10 +118,6 @@ function isPresentGroupIndex(index: unknown): index is number {
  */
 function isPersonAggregatedType(type: unknown): type is string {
     return isPresentType(type) && type !== 'group'
-}
-
-function explicitlyClearsAggregation(obj: Record<string, unknown> | null | undefined): boolean {
-    return hasKey(obj, 'aggregation_group_type_index') && !isPresentGroupIndex(obj?.aggregation_group_type_index)
 }
 
 function hasExplicitPersonProperty(group: FlagConditionGroup): boolean {
@@ -158,17 +151,6 @@ function indexProperties(properties: FlagProperty[] | null | undefined): Map<str
         byKey.set(prop.key, list)
     }
     return byKey
-}
-
-/** A set with no index of its own aggregates on the flag level, which the API distributes on write. */
-function storedAggregation(group: FlagConditionGroup, flagLevelGroupIndex: number | undefined): number | null {
-    return (
-        resolveGroupIndex(
-            explicitlyClearsAggregation(group),
-            group.aggregation_group_type_index,
-            flagLevelGroupIndex
-        ) ?? null
-    )
 }
 
 /** `aggregation` is null for a set that aggregates on persons. */
@@ -335,19 +317,6 @@ function keepsKeys(incoming: FlagConditionGroup | undefined, existingSet: Existi
     return hasSameKeySet(incomingKeys, existingSet?.propsByKey ?? new Map())
 }
 
-/** Callers fold an explicit null into `pinnedToPerson` first. `explicitIndex` cannot tell a
- * null from an absent key. */
-function resolveGroupIndex(
-    pinnedToPerson: boolean,
-    explicitIndex: unknown,
-    fallbackIndex: number | undefined
-): number | undefined {
-    if (pinnedToPerson) {
-        return undefined
-    }
-    return isPresentGroupIndex(explicitIndex) ? explicitIndex : fallbackIndex
-}
-
 function usableCandidates(
     candidates: FlagProperty[] | undefined,
     usableType: (type: unknown) => boolean
@@ -367,7 +336,7 @@ function hasSameTypeAndGroupIndex(a: FlagProperty, b: FlagProperty): boolean {
 function pickCandidate(usable: FlagProperty[], incoming: FlagProperty): FlagProperty | undefined {
     const matching = usable.filter((candidate) => matchesFilter(candidate, incoming))
     const sameOperator = incoming.operator ? usable.filter((candidate) => candidate.operator === incoming.operator) : []
-    const remaining = matching.length > 0 ? matching : sameOperator.length > 0 ? sameOperator : usable
+    const remaining = [matching, sameOperator, usable].find((tier) => tier.length > 0) ?? []
     const first = remaining[0]
     return first && remaining.every((candidate) => hasSameTypeAndGroupIndex(candidate, first)) ? first : undefined
 }
@@ -552,9 +521,7 @@ function typeSetProperties(
                     setGroupTypeIndex,
                     'person'
                 )
-                return (
-                    fromMatched.type === fromSource.type && fromMatched.group_type_index === fromSource.group_type_index
-                )
+                return hasSameTypeAndGroupIndex(fromMatched, fromSource)
             })
             return allAgree ? fromSource : prop
         })
@@ -593,15 +560,14 @@ function staleConditionIdMessage(stale: number[]): string {
 
 function sourcesByConditionId(
     conditionIds: (string | undefined)[],
-    existingSets: (ExistingSet | undefined)[],
-    flagLevelGroupIndex: number | undefined
+    existingSets: (ExistingSet | undefined)[]
 ): (ExistingSet | undefined)[] {
     const storedById = new Map<string, ExistingSet>()
     for (const existingSet of existingSets) {
         if (!existingSet) {
             continue
         }
-        const id = conditionId(existingSet.group, flagLevelGroupIndex)
+        const id = conditionId(existingSet.group, existingSet.aggregation)
         if (!storedById.has(id)) {
             storedById.set(id, existingSet)
         }
@@ -731,10 +697,7 @@ export function preserveGroupTargetingFilters(
         const mixedAggregation = storedAggregations.size > 1
         const aggregatesOnPersonsOnly = storedAggregations.size === 1 && storedAggregations.has(null)
         const { sourceSets, matchedPersonSets }: SetSources = carriesConditionIds
-            ? {
-                  sourceSets: sourcesByConditionId(conditionIds, existingSets, existingFlagGroupIndex),
-                  matchedPersonSets: [],
-              }
+            ? { sourceSets: sourcesByConditionId(conditionIds, existingSets), matchedPersonSets: [] }
             : matchSetsByPositionAndContent(result.groups, existingSets, mixedAggregation)
         const personSources = sourceSets.map((sourceSet) => (sourceSet?.aggregation === null ? sourceSet : undefined))
 
