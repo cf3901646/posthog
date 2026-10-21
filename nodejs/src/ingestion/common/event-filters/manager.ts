@@ -13,6 +13,28 @@ export interface EventFilterManagerOptions {
 }
 
 /**
+ * Wraps a load so that a failure before the first success resolves to `empty`. The refresher
+ * caches that value and retries after its interval. Without a cached value, it would retry on
+ * every read. Later failures rethrow, so the refresher keeps the last loaded value.
+ */
+function emptyUntilLoaded<T>(load: () => Promise<T>, empty: () => T, reportError: (error: unknown) => void) {
+    let loaded = false
+    return async (): Promise<T> => {
+        try {
+            const value = await load()
+            loaded = true
+            return value
+        } catch (error) {
+            if (loaded) {
+                throw error
+            }
+            reportError(error)
+            return empty()
+        }
+    }
+}
+
+/**
  * Manages per-team event filter config loaded from Postgres. One filter
  * per team, cached via a `BackgroundRefresher` that reloads all active
  * filters every 60s. The pipeline overrides that drop all events for
@@ -28,40 +50,41 @@ export class EventFilterManager {
         private readonly postgres: PostgresRouter,
         private readonly options: EventFilterManagerOptions
     ) {
-        // A failed reload keeps the last loaded filters. The default handler rethrows from a
-        // detached promise, and the server stops on an unhandled rejection.
+        const reportFilterError = (error: unknown): void => {
+            logger.error('Failed to refresh event filter config', { error })
+            eventFiltersRefreshErrors.inc()
+        }
+        const reportOverrideError = (error: unknown): void => {
+            logger.error('Failed to refresh event filter pipeline overrides', {
+                pipeline: this.options.pipeline,
+                error,
+            })
+            eventFiltersOverrideRefreshErrors.inc()
+        }
+        // The error handlers must not rethrow. The refresher calls them from a detached promise,
+        // and the server stops on an unhandled rejection.
         this.refresher = new BackgroundRefresher(
-            async () => this.fetchAllFilters(),
+            emptyUntilLoaded(
+                () => this.fetchAllFilters(),
+                () => new Map(),
+                reportFilterError
+            ),
             60_000,
-            (error) => {
-                logger.error('Failed to refresh event filter config', { error })
-                eventFiltersRefreshErrors.inc()
-            }
+            reportFilterError
         )
         this.dropAllEventsTeams = new BackgroundRefresher(
-            async () => this.fetchDropAllEventsTeams(),
+            emptyUntilLoaded(
+                () => this.fetchDropAllEventsTeams(),
+                () => new Set(),
+                reportOverrideError
+            ),
             60_000,
-            (error) => {
-                logger.error('Failed to refresh event filter pipeline overrides', {
-                    pipeline: this.options.pipeline,
-                    error,
-                })
-                eventFiltersOverrideRefreshErrors.inc()
-            }
+            reportOverrideError
         )
     }
 
     async prime(): Promise<void> {
-        // Failures are logged but don't surface — `tryGet` will retry in the
-        // background on subsequent reads.
-        await Promise.all([
-            this.refresher.get().catch((error) => {
-                logger.error('Failed to initialize event filter config', { error })
-            }),
-            this.dropAllEventsTeams.get().catch((error) => {
-                logger.error('Failed to initialize event filter pipeline overrides', { error })
-            }),
-        ])
+        await Promise.all([this.refresher.get(), this.dropAllEventsTeams.get()])
     }
 
     /** Returns the filter for a team, or null if disabled or has no conditions. Non-blocking. */
@@ -74,7 +97,7 @@ export class EventFilterManager {
     }
 
     /**
-     * True when the team's override drops every event in this pipeline. Non-blocking. Before
+     * True when the team's override drops every event in this pipeline. Non-blocking. Until
      * the first successful load it returns false, so events are ingested: a wrong drop cannot
      * be undone.
      */

@@ -143,6 +143,8 @@ describe('EventFilterManager', () => {
         await stop()
     })
 
+    const liveTree = { type: 'condition', field: 'event_name', operator: 'exact', value: 'a' }
+
     function mockQueryRows(rowsByQueryName: Record<string, unknown[]>): void {
         mockPostgres.query.mockImplementation((_use, _sql, _params, queryName: string) =>
             Promise.resolve({ rows: rowsByQueryName[queryName] ?? [] })
@@ -183,17 +185,47 @@ describe('EventFilterManager', () => {
         }
     })
 
-    it('lets events through when the pipeline overrides never loaded', async () => {
+    it.each([
+        {
+            name: 'filters',
+            input: { failingQuery: 'fetchAllEventFilters' },
+            expected: { loadedRows: [{ id: 'f1', team_id: 1, mode: 'live', filter_tree: liveTree }] },
+        },
+        {
+            name: 'pipeline overrides',
+            input: { failingQuery: 'fetchEventFilterDropAllEventsTeams' },
+            expected: { loadedRows: [{ team_id: 1 }] },
+        },
+    ])('retries a failed first load of $name only after the refresh interval', async ({ input, expected }) => {
+        const failingQueryCalls = (): number =>
+            mockPostgres.query.mock.calls.filter((call) => call[3] === input.failingQuery).length
+        const read = (manager: EventFilterManager): unknown =>
+            input.failingQuery === 'fetchAllEventFilters' ? manager.getFilter(1) : manager.dropsAllEvents(1)
         mockPostgres.query.mockImplementation((_use, _sql, _params, queryName: string) =>
-            queryName === 'fetchEventFilterDropAllEventsTeams'
+            queryName === input.failingQuery
                 ? Promise.reject(new Error('connection refused'))
                 : Promise.resolve({ rows: [] })
         )
         const { manager, stop } = await buildManager()
 
-        expect(manager.dropsAllEvents(1)).toBe(false)
+        try {
+            for (let i = 0; i < 5; i++) {
+                expect(read(manager)).toBeFalsy()
+                await new Promise((resolve) => setImmediate(resolve))
+            }
+            expect(failingQueryCalls()).toBe(1)
 
-        await stop()
+            mockQueryRows({ [input.failingQuery]: expected.loadedRows })
+            jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 61_000)
+            read(manager)
+            await new Promise((resolve) => setImmediate(resolve))
+
+            expect(failingQueryCalls()).toBe(2)
+            expect(read(manager)).toBeTruthy()
+        } finally {
+            jest.restoreAllMocks()
+            await stop()
+        }
     })
 
     it('handles multiple teams', async () => {
