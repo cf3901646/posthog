@@ -209,7 +209,7 @@ export function useSignalSourceToggles() {
       if (!source?.schemas || !Array.isArray(source.schemas)) return;
 
       const requiredSchema = source.schemas.find(
-        (s) => s.name.toLowerCase() === dwConfig.requiredTable,
+        (s) => s.name.toLowerCase() === dwConfig.requiredTable.toLowerCase(),
       );
       if (!requiredSchema) return;
 
