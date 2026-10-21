@@ -354,6 +354,11 @@ impl ChangelogConfig {
         }
     }
 
+    /// Every consumer group a draining generation waits on before it retires.
+    pub fn gated_groups(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.writer_group.as_str()).chain(self.relay_group.as_deref())
+    }
+
     pub fn target(&self) -> ChangelogTarget {
         ChangelogTarget {
             topic: self.topic.clone(),
@@ -460,6 +465,16 @@ pub struct MigrationState {
     pub blocking: Vec<String>,
     /// Why the saga was cancelled, recorded by the cancelling write.
     pub cancel_reason: Option<String>,
+}
+
+/// A changelog consumer group's proof that it has read a draining generation
+/// to its sealed end; retire waits for one from every group the config names.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DrainReport {
+    pub topic: String,
+    pub group: String,
+    pub reported_by: String,
+    pub reported_at_ms: i64,
 }
 
 /// One leader's report of the old partitions it sealed; the flip takes the union.
