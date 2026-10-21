@@ -25,9 +25,16 @@ pub struct ParseFailure {
     category: Category,
     line: usize,
     column: usize,
+    path: Option<String>,
 }
 
 impl ParseFailure {
+    /// `path` must hold only schema field names, indices and `<key>`.
+    pub fn with_path(mut self, path: Option<String>) -> Self {
+        self.path = path;
+        self
+    }
+
     fn description(&self) -> String {
         let what = match self.category {
             Category::Syntax => "invalid JSON",
@@ -35,10 +42,16 @@ impl ParseFailure {
             Category::Eof => "unexpected end of JSON",
             Category::Io => "unreadable body",
         };
-        format!(
-            "Failed to parse request body: {what} at line {}, column {}.",
-            self.line, self.column
-        )
+        match &self.path {
+            Some(path) => format!(
+                "Failed to parse request body: {what} at {path} (line {}, column {}).",
+                self.line, self.column
+            ),
+            None => format!(
+                "Failed to parse request body: {what} at line {}, column {}.",
+                self.line, self.column
+            ),
+        }
     }
 }
 
@@ -55,6 +68,7 @@ impl From<serde_json::Error> for ParseFailure {
             category: e.classify(),
             line: e.line(),
             column: e.column(),
+            path: None,
         }
     }
 }

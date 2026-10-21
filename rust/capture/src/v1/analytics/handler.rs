@@ -3,6 +3,7 @@ use axum::extract::{MatchedPath, RawQuery, State};
 use axum::http::{header, HeaderMap, Method};
 use axum::response::IntoResponse;
 use axum_client_ip::InsecureClientIp;
+use serde_path_to_error::Segment;
 
 use super::constants::{CAPTURE_V1_PATH, CAPTURE_V1_PATHS};
 use super::context::Context;
@@ -87,7 +88,8 @@ pub async fn handle_request(
         .record(payload.len() as f64);
 
     let batch: Batch = serde_json::from_slice(&payload).map_err(|e| {
-        let err = v1::Error::from(e);
+        let failure = v1::error::ParseFailure::from(e).with_path(error_path(&payload));
+        let err = v1::Error::RequestParsingError(failure);
         log_stat_error!(err, &context);
         err
     })?;
@@ -101,6 +103,58 @@ pub async fn handle_request(
             Err(err)
         }
     }
+}
+
+/// Bodies over this size skip the second parse, so large junk costs nothing extra.
+const ERROR_PATH_MAX_BODY_BYTES: usize = 1024 * 1024;
+const ERROR_PATH_MAX_CHARS: usize = 120;
+/// Our schema's field names. Any other map key is the caller's and prints as `<key>`.
+const ERROR_PATH_FIELDS: &[&str] = &[
+    "batch",
+    "created_at",
+    "historical_migration",
+    "event",
+    "uuid",
+    "distinct_id",
+    "timestamp",
+    "session_id",
+    "window_id",
+    "options",
+    "properties",
+];
+
+/// Where the first parse error is, as `batch[3].distinct_id`, for a body that already failed.
+fn error_path(payload: &[u8]) -> Option<String> {
+    if payload.len() > ERROR_PATH_MAX_BODY_BYTES {
+        return None;
+    }
+    let mut deserializer = serde_json::Deserializer::from_slice(payload);
+    let err = serde_path_to_error::deserialize::<_, Batch>(&mut deserializer).err()?;
+    let mut path = String::new();
+    for segment in err.path().iter() {
+        match segment {
+            Segment::Seq { index } => path.push_str(&format!("[{index}]")),
+            Segment::Map { key } => {
+                if !path.is_empty() {
+                    path.push('.');
+                }
+                match ERROR_PATH_FIELDS
+                    .iter()
+                    .find(|field| **field == key.as_str())
+                {
+                    Some(field) => path.push_str(field),
+                    None => path.push_str("<key>"),
+                }
+            }
+            Segment::Enum { .. } | Segment::Unknown => {
+                if !path.is_empty() {
+                    path.push('.');
+                }
+                path.push_str("<key>");
+            }
+        }
+    }
+    (!path.is_empty() && path.len() <= ERROR_PATH_MAX_CHARS).then_some(path)
 }
 
 /// Resolve a matched route pattern to its `&'static str`, which the Context
@@ -329,51 +383,96 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
-    #[rstest]
-    #[case::invalid_json(
-        "not json at all {{{",
-        "Failed to parse request body: invalid JSON at line 1, column 2."
-    )]
-    #[case::wrong_type_distinct_id(
-        r#"{"created_at":"2026-03-19T14:30:00Z","batch":[{"event":"e","uuid":"019a0000-0000-7000-8000-000000000001","distinct_id":12345678901234567890123,"timestamp":"2026-03-19T14:30:00Z"}]}"#,
-        "Failed to parse request body: wrong JSON type or value at line 1, column 142."
-    )]
-    #[case::wrong_type_batch(
-        r#"{"created_at":"2026-03-19T14:30:00Z","batch":"alice@example.com"}"#,
-        "Failed to parse request body: wrong JSON type or value at line 1, column 64."
-    )]
-    #[case::truncated(
-        r#"{"created_at":"2026-03-19T14:30:00Z","batch":[{"event":"e""#,
-        "Failed to parse request body: unexpected end of JSON at line 1, column 58."
-    )]
-    #[tokio::test]
-    async fn unparseable_body_reports_position_without_content(
-        #[case] body: &str,
-        #[case] expected_description: &str,
-    ) {
+    const PII_VALUES: [&str; 4] = [
+        "alice@example.com",
+        "12345678901234567890123",
+        "1.2345678901234568e22",
+        "secret-key",
+    ];
+
+    async fn parse_error_description(body: String) -> String {
         let ts = TestStateBuilder::new().build();
         let app = test_app(ts.state);
-
         let resp = app
-            .oneshot(valid_request().body(Body::from(body.to_owned())).unwrap())
+            .oneshot(valid_request().body(Body::from(body)).unwrap())
             .await
             .unwrap();
-
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         let json = response_json(resp).await;
         assert_eq!(json["error"], "request_parsing_error");
-        assert_eq!(json["error_description"], expected_description);
         let raw = json.to_string();
-        for value in [
-            "alice@example.com",
-            "12345678901234567890123",
-            "1.2345678901234568e22",
-        ] {
+        for value in PII_VALUES {
             assert!(
                 !raw.contains(value),
                 "response echoes request content: {raw}"
             );
         }
+        json["error_description"].as_str().unwrap().to_owned()
+    }
+
+    #[rstest]
+    #[case::invalid_json(
+        "not json at all {{{",
+        "Failed to parse request body: invalid JSON at line 1, column 2."
+    )]
+    #[case::wrong_type_distinct_id_first_event(
+        r#"{"created_at":"2026-03-19T14:30:00Z","batch":[{"event":"e","uuid":"019a0000-0000-7000-8000-000000000001","distinct_id":12345678901234567890123,"timestamp":"2026-03-19T14:30:00Z"}]}"#,
+        "Failed to parse request body: wrong JSON type or value at batch[0].distinct_id (line 1, column 142)."
+    )]
+    #[case::wrong_type_distinct_id_fourth_event(
+        r#"{"created_at":"2026-03-19T14:30:00Z","batch":[{"event":"e","uuid":"019a0000-0000-7000-8000-000000000001","distinct_id":"u","timestamp":"2026-03-19T14:30:00Z"},{"event":"e","uuid":"019a0000-0000-7000-8000-000000000002","distinct_id":"u","timestamp":"2026-03-19T14:30:00Z"},{"event":"e","uuid":"019a0000-0000-7000-8000-000000000003","distinct_id":"u","timestamp":"2026-03-19T14:30:00Z"},{"event":"e","uuid":"019a0000-0000-7000-8000-000000000004","distinct_id":12345678901234567890123,"timestamp":"2026-03-19T14:30:00Z"}]}"#,
+        "Failed to parse request body: wrong JSON type or value at batch[3].distinct_id (line 1, column 481)."
+    )]
+    #[case::wrong_type_batch(
+        r#"{"created_at":"2026-03-19T14:30:00Z","batch":"alice@example.com"}"#,
+        "Failed to parse request body: wrong JSON type or value at batch (line 1, column 64)."
+    )]
+    #[case::wrong_type_created_at(
+        r#"{"created_at":12345678901234567890123,"batch":[]}"#,
+        "Failed to parse request body: wrong JSON type or value at created_at (line 1, column 37)."
+    )]
+    #[case::user_key_in_options_is_masked(
+        r#"{"created_at":"2026-03-19T14:30:00Z","batch":[{"event":"e","uuid":"019a0000-0000-7000-8000-000000000001","distinct_id":"u","timestamp":"2026-03-19T14:30:00Z","options":{"alice@example.com":"secret-key" "x"}}]}"#,
+        "Failed to parse request body: invalid JSON at batch[0].options.<key> (line 1, column 203)."
+    )]
+    #[case::unknown_field_name_is_masked(
+        r#"{"created_at":"2026-03-19T14:30:00Z","batch":[{"event":"e","alice@example.com":"secret-key" "x"}]}"#,
+        "Failed to parse request body: invalid JSON at batch[0].<key> (line 1, column 93)."
+    )]
+    #[case::field_outside_the_allow_list_is_masked(
+        r#"{"created_at":"2026-03-19T14:30:00Z","capture_internal":tru,"batch":[]}"#,
+        "Failed to parse request body: invalid JSON at <key> (line 1, column 60)."
+    )]
+    #[case::truncated(
+        r#"{"created_at":"2026-03-19T14:30:00Z","batch":[{"event":"e""#,
+        "Failed to parse request body: unexpected end of JSON at batch[0].<key> (line 1, column 58)."
+    )]
+    #[tokio::test]
+    async fn unparseable_body_reports_location_without_content(
+        #[case] body: &str,
+        #[case] expected_description: &str,
+    ) {
+        let description = parse_error_description(body.to_owned()).await;
+        assert_eq!(description, expected_description);
+    }
+
+    #[tokio::test]
+    async fn body_over_the_path_cap_reports_position_only() {
+        let padding = "x".repeat(super::ERROR_PATH_MAX_BODY_BYTES);
+        let body = format!(
+            r#"{{"created_at":"2026-03-19T14:30:00Z","batch":[{{"event":"e","uuid":"019a0000-0000-7000-8000-000000000001","distinct_id":"u","timestamp":"2026-03-19T14:30:00Z","properties":{{"pad":"{padding}"}}}},{{"event":"e","uuid":"019a0000-0000-7000-8000-000000000002","distinct_id":12345678901234567890123,"timestamp":"2026-03-19T14:30:00Z"}}]}}"#
+        );
+        assert!(body.len() > super::ERROR_PATH_MAX_BODY_BYTES);
+
+        let description = parse_error_description(body).await;
+
+        assert!(
+            description.starts_with(
+                "Failed to parse request body: wrong JSON type or value at line 1, column "
+            ),
+            "{description}"
+        );
+        assert!(!description.contains("batch"), "{description}");
     }
 
     #[tokio::test]

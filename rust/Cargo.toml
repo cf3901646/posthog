@@ -210,6 +210,7 @@ rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", 
 serde = { version = "1.0", features = ["derive"] }
 serde_derive = { version = "1.0" }
 serde_json = { version = "1.0" }
+serde_path_to_error = "0.1.20"
 serde_urlencoded = "0.7.1"
 siphasher = "1.0.1"
 snap = "1"
