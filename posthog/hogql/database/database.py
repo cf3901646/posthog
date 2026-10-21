@@ -118,7 +118,11 @@ from posthog.hogql.database.schema.marketing_conversions_preaggregated import Ma
 from posthog.hogql.database.schema.marketing_costs_preaggregated import MarketingCostsPreaggregatedTable
 from posthog.hogql.database.schema.marketing_costs_precomputed import MarketingCostsPrecomputedTable
 from posthog.hogql.database.schema.marketing_touchpoints_preaggregated import MarketingTouchpointsPreaggregatedTable
-from posthog.hogql.database.schema.mcp_intent_assignments import MCPIntentAssignmentsTable
+from posthog.hogql.database.schema.mcp_intent_assignments import (
+    MCPIntentAssignmentsTable,
+    MCPIntentCallsHourlyTable,
+    MCPIntentTopicDailyTable,
+)
 from posthog.hogql.database.schema.metrics import (
     MetricAttributesTable,
     MetricNamesTable,
@@ -436,6 +440,8 @@ ROOT_TABLES__DO_NOT_ADD_ANY_MORE: dict[str, TableNode] = {
     "raw_query_log": TableNode(name="raw_query_log", table=RawQueryLogArchiveTable()),
     "raw_document_embeddings": TableNode(name="raw_document_embeddings", table=RawDocumentEmbeddingsTable()),
     "mcp_intent_assignments": TableNode(name="mcp_intent_assignments", table=MCPIntentAssignmentsTable()),
+    "mcp_intent_calls_hourly": TableNode(name="mcp_intent_calls_hourly", table=MCPIntentCallsHourlyTable()),
+    "mcp_intent_topic_daily": TableNode(name="mcp_intent_topic_daily", table=MCPIntentTopicDailyTable()),
 }
 # Read comment above this block before editing ^
 # --------------------
