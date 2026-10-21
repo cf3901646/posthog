@@ -1789,6 +1789,7 @@ describe('maxThreadLogic', () => {
             expect(logsSpy).toHaveBeenCalledWith(SANDBOX_TASK_ID, SANDBOX_RUN_ID, {
                 signal: expect.any(AbortSignal),
                 projectId: 997,
+                view: 'thread',
             })
             expect(runSpy).toHaveBeenCalledWith('997', SANDBOX_TASK_ID, SANDBOX_RUN_ID, {
                 signal: expect.any(AbortSignal),
