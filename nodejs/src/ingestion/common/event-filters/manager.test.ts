@@ -143,9 +143,15 @@ describe('EventFilterManager', () => {
         await stop()
     })
 
-    it('keeps the loaded filters when a background reload fails', async () => {
-        mockPostgres.query.mockResolvedValueOnce({
-            rows: [
+    function mockQueryRows(rowsByQueryName: Record<string, unknown[]>): void {
+        mockPostgres.query.mockImplementation((_use, _sql, _params, queryName: string) =>
+            Promise.resolve({ rows: rowsByQueryName[queryName] ?? [] })
+        )
+    }
+
+    it('keeps the loaded filters and overrides when a background reload fails', async () => {
+        mockQueryRows({
+            fetchAllEventFilters: [
                 {
                     id: 'f1',
                     team_id: 1,
@@ -153,6 +159,7 @@ describe('EventFilterManager', () => {
                     filter_tree: { type: 'condition', field: 'event_name', operator: 'exact', value: 'a' },
                 },
             ],
+            fetchEventFilterDropAllEventsTeams: [{ team_id: 2 }],
         })
         const { manager, stop } = await buildManager()
         mockPostgres.query.mockRejectedValue(new Error('connection refused'))
@@ -162,11 +169,13 @@ describe('EventFilterManager', () => {
 
         try {
             manager.getFilter(1)
+            manager.dropsAllEvents(2)
             await new Promise((resolve) => setImmediate(resolve))
 
-            expect(mockPostgres.query).toHaveBeenCalledTimes(2)
+            expect(mockPostgres.query).toHaveBeenCalledTimes(4)
             expect(unhandledRejection).not.toHaveBeenCalled()
             expect(manager.getFilter(1)!.id).toBe('f1')
+            expect(manager.dropsAllEvents(2)).toBe(true)
         } finally {
             process.off('unhandledRejection', unhandledRejection)
             jest.restoreAllMocks()
@@ -174,12 +183,15 @@ describe('EventFilterManager', () => {
         }
     })
 
-    it('lets events through when the pipeline override cannot load', async () => {
-        mockPostgres.query.mockResolvedValueOnce({ rows: [] })
+    it('lets events through when the pipeline overrides never loaded', async () => {
+        mockPostgres.query.mockImplementation((_use, _sql, _params, queryName: string) =>
+            queryName === 'fetchEventFilterDropAllEventsTeams'
+                ? Promise.reject(new Error('connection refused'))
+                : Promise.resolve({ rows: [] })
+        )
         const { manager, stop } = await buildManager()
-        mockPostgres.query.mockRejectedValue(new Error('connection refused'))
 
-        expect(await manager.dropsAllEvents(1)).toBe(false)
+        expect(manager.dropsAllEvents(1)).toBe(false)
 
         await stop()
     })
