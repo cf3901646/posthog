@@ -93,6 +93,7 @@ class ManagedWarehouseShadowResult:
     error: str | None = None
     file_size_bytes: int = 0
     file_size_delta_bytes: int = 0
+    bytes_read: int | None = None
 
 
 @frozen
@@ -221,6 +222,7 @@ def _resolve_managed_warehouse_job(job_id: str, result: "ManagedWarehouseShadowR
         job.status = DataModelingJobStatus.FAILED
         job.rows_materialized = 0
         job.error = result.error
+    job.bytes_read = result.bytes_read
     job.last_run_at = dt.datetime.now(dt.UTC)
     job.save()
     return job.engine
@@ -251,6 +253,7 @@ async def _materialize_view_managed_warehouse(
     values: dict[str, object] = {}
     s3_secrets: tuple[DuckLakeS3Secret, ...] = ()
     plan: WritePlan | None = None
+    processed_bytes: list[int] = []
     try:
         from products.managed_warehouse.backend.facade.client import execute_ducklake_create_table, execute_trino_model
 
@@ -273,6 +276,7 @@ async def _materialize_view_managed_warehouse(
                 saved_query_id=saved_query.id,
                 source_query=saved_query.query,
                 incremental=_trino_incremental_write(plan),
+                on_processed_bytes=processed_bytes.append,
             )
             if plan.config is not None:
                 # A quiet window writes nothing, so it records the run without moving the watermark.
@@ -324,6 +328,7 @@ async def _materialize_view_managed_warehouse(
             table_name=result.table_name,
             file_size_bytes=result.file_size_bytes,
             file_size_delta_bytes=result.file_size_delta_bytes,
+            bytes_read=_total_bytes_read(processed_bytes),
         )
         job_engine = await _resolve_managed_warehouse_job(inputs.job_id, shadow_result)
         await clear_node_suspension_for_engine(
@@ -348,6 +353,7 @@ async def _materialize_view_managed_warehouse(
             schema_name=schema_name,
             table_name=table_name,
             error=str(e),
+            bytes_read=_total_bytes_read(processed_bytes),
         )
         if plan is not None and plan.incremental:
             # The merge may have stopped partway or failed on a schema change. Rebuilding next run
@@ -372,6 +378,11 @@ async def _materialize_view_managed_warehouse(
                 f"Suspended node {inputs.node_id} ({job_engine}) after {CONSECUTIVE_FAILURES_TO_SUSPEND} consecutive failures",
             )
         return shadow_result
+
+
+def _total_bytes_read(processed_bytes: list[int]) -> int | None:
+    # No statement reported its bytes, so the run was not measured. That is not the same as reading zero bytes.
+    return sum(processed_bytes) if processed_bytes else None
 
 
 def _trino_incremental_write(plan: WritePlan) -> TrinoIncrementalWrite | None:
