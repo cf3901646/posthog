@@ -35,7 +35,7 @@ from products.signals.backend.report_generation.research import ReportResearchOu
 from products.signals.backend.report_generation.research_reviewers import resolve_research_reviewers
 from products.signals.backend.report_generation.select_repo import RepoSelectionResult
 from products.signals.backend.scout_harness.tools.report import set_scout_report_reviewers
-from products.signals.backend.slack_inbox_notifications import _resolve_suggested_reviewer_user_ids
+from products.signals.backend.slack_inbox_notifications import resolve_suggested_reviewer_user_ids
 from products.signals.backend.suggested_reviewer_index import report_ids_naming_reviewers, sync_suggested_reviewer_index
 from products.signals.backend.temporal.agentic.report import _persist_agentic_report_artefacts
 
@@ -287,7 +287,7 @@ class TestReportAssignmentService(BaseTest):
             else [self.member]
         )
         assert [entry.user_uuid for entry in self.service.read().reviewers] == [str(user.uuid) for user in expected]
-        assert _resolve_suggested_reviewer_user_ids(self.report) == {user.id for user in expected}
+        assert resolve_suggested_reviewer_user_ids(self.report) == {user.id for user in expected}
         for user in [self.user, self.member]:
             assert bool(
                 list(
