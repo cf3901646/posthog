@@ -16,6 +16,7 @@ description: >
 Every stock chart is a thin layer on a public core, and the overlay layer above the canvas is React.
 That gives three seams for drawing what the library does not ship, and `d3` is already an admitted canvas import for the geometry.
 Load `building-react-quill-canvases` first for the canvas contract, the allowed imports and the stock chart table; this skill starts where that table ends.
+That skill's `references/quill-charts/` files hold the exact props of `Chart`, `RadialChart` and each overlay, such as `ReferenceLine.d.ts`. Read the file for the one you use before you write it.
 
 ## Climb the ladder, stop at the first rung that fits
 
