@@ -85,7 +85,7 @@ jobs:
             tag-rules: |
                 type=ref,event=pr
                 type=sha
-                type=raw,value=${{ github.head_ref || github.ref_name }},enable=${{ (github.head_ref || github.ref_name) != 'master' }}
+                type=raw,value=${{ github.head_ref || github.ref_name }}
             checkout-ref: ${{ github.event.pull_request.head.sha || github.sha }}
             timeout-minutes: 30
             event-name: posthog-rust-smoke-test-image-build

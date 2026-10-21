@@ -54,9 +54,7 @@ jobs:
                       awk -f .github/scripts/flatten-parallel-steps-for-actionlint.awk "$workflow" \
                           > "/tmp/actionlint-workflows/$(basename "$workflow")"
                   done
-                  # GitHub supports queued concurrency, but actionlint does not yet (rhysd/actionlint#657).
                   ./.bin/actionlint -config-file .github/actionlint.yaml \
-                      -ignore '^unexpected key "queue" for "concurrency" section\.' \
                       -format '{{json .}}' /tmp/actionlint-workflows/* > actionlint.json
 
             - name: Summarize findings
