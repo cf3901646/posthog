@@ -19,6 +19,7 @@ from products.warehouse_sources.backend.facade.contracts import (
     UploadReadSettings,
 )
 from products.warehouse_sources.backend.file_uploads import (
+    TABLE_FORMAT_TO_FILE_FORMAT,
     LegacyUpload,
     is_safe_upload_filename,
     parse_hosted_upload,
@@ -30,6 +31,7 @@ from products.warehouse_sources.backend.temporal.data_imports.sources.file_uploa
 )
 
 __all__ = [
+    "can_replace_file",
     "create_file_upload_source",
     "file_upload_sources_enabled",
     "has_file_upload_source",
@@ -39,6 +41,7 @@ __all__ = [
     "read_upload_in_place",
     "replace_file_upload",
     "sanitize_upload_filename",
+    "upload_format_for_table_format",
 ]
 
 
@@ -61,8 +64,21 @@ def create_file_upload_source(
 
 
 def has_file_upload_source(team_id: int, table_id: UUID) -> bool:
+    """Whether a file upload source links to the table, so deleting the source deletes the table."""
     table = DataWarehouseTable.objects.filter(team_id=team_id, pk=table_id).first()
     return table is not None and _service.find_file_upload_schema(table) is not None
+
+
+def can_replace_file(team_id: int, table_id: UUID) -> bool:
+    """Whether a new upload for the table goes to a file upload source: one that imports the table, or
+    the one the self-managed migration made for it."""
+    table = DataWarehouseTable.objects.filter(team_id=team_id, pk=table_id).first()
+    return table is not None and _service.find_replaceable_upload_schema(table) is not None
+
+
+def upload_format_for_table_format(table_format: str) -> str | None:
+    """The upload format a file upload source reads a file of this table format in, or None when it can't."""
+    return TABLE_FORMAT_TO_FILE_FORMAT.get(table_format)
 
 
 def replace_file_upload(
@@ -70,7 +86,7 @@ def replace_file_upload(
 ) -> None:
     """Raises `FileUploadSourceError` when the table has no file upload source or a sync can't start."""
     table = DataWarehouseTable.objects.get(team_id=team_id, pk=table_id)
-    schema = _service.find_file_upload_schema(table)
+    schema = _service.find_replaceable_upload_schema(table)
     if schema is None:
         raise FileUploadSourceError("Only a table made from an uploaded file can have its file replaced.")
     _service.replace_file_upload(schema, _service.UploadedFile.from_ref(team_id, upload), read_settings)

@@ -595,6 +595,11 @@ class _BaseSource(ABC, Generic[ConfigType]):
         No-op by default."""
         return None
 
+    def manual_sync_refusal(self, source_model: "ExternalDataSource") -> str | None:
+        """Why a user can't start a sync of the source's schemas now, as a message for the user, or None
+        when they can. For a source whose inputs can't run a sync yet, such as one that waits for a file."""
+        return None
+
 
 class SourceExtractionNotImplementedError(NotImplementedError):
     """A source class carries no `source_for_pipeline` of its own, so only the base stub is left.

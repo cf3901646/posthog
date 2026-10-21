@@ -47,6 +47,10 @@ FILE_FORMAT_TO_TABLE_FORMAT: dict[str, str] = {
     FORMAT_JSON: "JSONEachRow",
     FORMAT_PARQUET: "Parquet",
 }
+# The upload format a table of each read format was made from.
+TABLE_FORMAT_TO_FILE_FORMAT: dict[str, str] = {
+    table_format: file_format for file_format, table_format in FILE_FORMAT_TO_TABLE_FORMAT.items()
+}
 
 # Per-format guidance shown when column detection fails on create. Each hint names the exact shape
 # the matching read format above expects, since that's what silently trips uploads up: CSV needs a

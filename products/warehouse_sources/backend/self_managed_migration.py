@@ -8,6 +8,13 @@ the first sync is a normal billable sync, and its last step points the existing 
 in PostHog storage (see `find_replaced_self_managed_table` and `DataWarehouseTable.adopt_into_source`),
 so the row id and the name stay and existing queries keep working.
 
+A table made from an uploaded file is read in place from PostHog's own bucket. It gets a file upload
+source of its own, with a turned-off schema that names it the same way. That source syncs only when a
+file is uploaded, and it reads no file until then, so the table keeps reading its current file, in either
+upload folder, and nothing is copied. The next upload for the table points the source at the new file
+and starts a normal billable sync, which adopts the table. The old file is deleted after that sync,
+when nothing else reads it (see `file_upload_sources.replace_file_upload`).
+
 The state of each table comes from the rows themselves: a migration source carries a marker in its
 `connection_metadata`, and its schemas name their tables. Running the migration again therefore
 continues where it stopped.
@@ -18,10 +25,12 @@ import dataclasses
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
+from django.conf import settings
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import CharField, Q, Value
+from django.db.models.functions import Cast, Concat
 
 import boto3
 import structlog
@@ -33,6 +42,19 @@ from posthog.models.team import Team
 
 from products.access_control.backend.facade.api import object_ids_with_rules, resource_has_rules
 from products.data_warehouse.backend.facade.api import delete_external_data_schedule
+from products.warehouse_sources.backend.facade.contracts import UploadReadSettings
+from products.warehouse_sources.backend.file_upload_sources import (
+    create_source_for_upload,
+    file_upload_source,
+    pending_upload_job_inputs,
+    upload_schema_metadata,
+)
+from products.warehouse_sources.backend.file_uploads import (
+    FILE_UPLOADS_FOLDER,
+    LEGACY_UPLOADS_FOLDER,
+    TABLE_FORMAT_TO_FILE_FORMAT,
+    HostedUpload,
+)
 from products.warehouse_sources.backend.models.credential import DataWarehouseCredential
 from products.warehouse_sources.backend.models.external_data_destination import (
     ExternalDataSourceDestination,
@@ -51,15 +73,17 @@ from products.warehouse_sources.backend.models.table import DataWarehouseTable
 from products.warehouse_sources.backend.presentation.views.external_data_source.helpers import (
     source_feature_flag_missing,
 )
-from products.warehouse_sources.backend.temporal.data_imports.sources.common.object_store.discovery import (
-    TableDefinition,
+from products.warehouse_sources.backend.temporal.data_imports.sources.common.object_store.csv_types import (
+    UnsupportedCsvColumnError,
 )
 from products.warehouse_sources.backend.temporal.data_imports.sources.common.object_store.self_managed import (
     SelfManagedCredential,
     SelfManagedLocation,
     StorageService,
     UnmappableTableError,
+    needs_preserved_column_names,
     parse_self_managed_url,
+    refuse_nested_columns,
     table_definition_for,
 )
 from products.warehouse_sources.backend.temporal.data_imports.sources.common.object_store.settings import (
@@ -71,7 +95,11 @@ from products.warehouse_sources.backend.temporal.data_imports.sources.common.obj
     ObjectStorageSource,
 )
 from products.warehouse_sources.backend.temporal.data_imports.sources.common.registry import SourceRegistry
-from products.warehouse_sources.backend.types import ExternalDataJobStatus
+from products.warehouse_sources.backend.temporal.data_imports.sources.file_upload.source import (
+    FileUploadSource,
+    UploadedFileFormat,
+)
+from products.warehouse_sources.backend.types import ExternalDataJobStatus, ExternalDataSourceType
 
 logger = structlog.get_logger(__name__)
 
@@ -134,12 +162,16 @@ class MigrationOptions:
 
 @frozen
 class _TablePlan:
-    """How one self-managed table maps onto an object storage source."""
+    """How one self-managed table maps onto an import source."""
 
-    location: SelfManagedLocation
-    source: ObjectStorageSource[Any]
-    definition: TableDefinition
+    source: ObjectStorageSource[Any] | FileUploadSource
+    schema_metadata: dict[str, Any]
     job_inputs: dict[str, Any] = dataclasses.field(repr=False)
+    # Tables with the same group key and credential share one source.
+    group_key: str
+    description: str
+    # An uploaded table has no credential, and gets a source of its own.
+    shares_source: bool = True
 
 
 @frozen
@@ -204,7 +236,8 @@ class _Planner:
     def __init__(self, resolve_region: BucketRegionResolver) -> None:
         self._resolve_region = resolve_region
         self._sources = _object_storage_sources()
-        self._flag_missing: dict[tuple[int, StorageService], bool] = {}
+        self._upload_source = file_upload_source()
+        self._flag_missing: dict[tuple[int, str], bool] = {}
         self._regions: dict[tuple[str, str], str | None] = {}
         self._tables_with_rules: dict[int, set[str]] = {}
         self._teams_with_source_rules: dict[int, bool] = {}
@@ -212,16 +245,20 @@ class _Planner:
     def plan(self, table: DataWarehouseTable) -> _TablePlan | str:
         """The plan for a table, or the reason the table can't be migrated."""
         credential = _credential_of(table)
-        if credential is None:
+        hosted = table.hosted_upload if credential is None else None
+        if credential is None and hosted is None:
             return "the table has no credential"
         if self._has_access_rules(table):
-            # The new source would hold the table's key with default access, and a member the
-            # table's rules shut out could read the same files through a schema of that source.
+            # The new source would get default access, and a member the table's rules shut out
+            # could read the same files through a schema of that source.
             return "the table has its own access rules, which the source PostHog would create can't carry"
         if self._has_source_rules(table):
             # A table in a source falls back to the rules for sources, which never reached a
             # self-managed table, so moving it could take access away from members who have it.
             return "the project has access rules for sources, which would start to apply to the table"
+        if hosted is not None:
+            return self._plan_upload(table, hosted)
+        assert credential is not None
         try:
             location = parse_self_managed_url(table.url_pattern)
             source = self._sources.get(location.service)
@@ -240,7 +277,45 @@ class _Planner:
             job_inputs = source.job_inputs_for_self_managed(location, credential)
         except UnmappableTableError as e:
             return str(e)
-        return _TablePlan(location=location, source=source, definition=definition, job_inputs=job_inputs)
+        return _TablePlan(
+            source=source,
+            schema_metadata=definition.schema_metadata(),
+            job_inputs=job_inputs,
+            group_key=location.group_key,
+            description=f"Self-managed tables in {location.bucket}",
+        )
+
+    def _plan_upload(self, table: DataWarehouseTable, hosted: HostedUpload) -> _TablePlan | str:
+        """A table that reads a file the team uploaded gets a file upload source of its own."""
+        source = self._upload_source
+        if self._team_lacks_flag(table.team, source):
+            return f"the team doesn't have the '{source.requires_team_feature_flag}' feature flag"
+        file_format = TABLE_FORMAT_TO_FILE_FORMAT.get(table.format)
+        if file_format is None:
+            return f"an uploaded '{table.format}' file has no import equivalent"
+        upload_format = cast(UploadedFileFormat, file_format)
+        columns = table.columns or {}
+        read_settings = UploadReadSettings(columns=columns, allow_double_quotes=table.csv_allow_double_quotes)
+        try:
+            # The import stores arrays and tuples as text, so adopting the table would break queries on them.
+            refuse_nested_columns(columns)
+            schema_metadata = upload_schema_metadata(
+                table.name,
+                hosted.filename,
+                upload_format,
+                read_settings,
+                needs_preserved_column_names(columns.keys()),
+            )
+        except (UnmappableTableError, UnsupportedCsvColumnError) as e:
+            return str(e)
+        return _TablePlan(
+            source=source,
+            schema_metadata=schema_metadata,
+            job_inputs=pending_upload_job_inputs(upload_format, table.name),
+            group_key=f"upload/{table.pk}",
+            description=f"Uploaded file for {table.name}"[:400],
+            shares_source=False,
+        )
 
     def _has_access_rules(self, table: DataWarehouseTable) -> bool:
         if table.team_id not in self._tables_with_rules:
@@ -256,8 +331,8 @@ class _Planner:
             )
         return self._teams_with_source_rules[table.team_id]
 
-    def _team_lacks_flag(self, team: Team, source: ObjectStorageSource[Any]) -> bool:
-        key = (team.pk, source.self_managed_service)
+    def _team_lacks_flag(self, team: Team, source: ObjectStorageSource[Any] | FileUploadSource) -> bool:
+        key = (team.pk, str(source.source_type))
         if key not in self._flag_missing:
             self._flag_missing[key] = source_feature_flag_missing(source, team)
         return self._flag_missing[key]
@@ -302,13 +377,46 @@ def _is_live(schema: ExternalDataSchema) -> bool:
     return not schema.deleted and not schema.source.deleted
 
 
+def _uploaded_table_filter() -> Q:
+    """Credential-less tables that read a file in PostHog's bucket, in either upload folder.
+
+    Narrowed to the table's own team folder of each upload folder, so tables PostHog writes to the
+    bucket itself (materialized views) stay out. `DataWarehouseTable.hosted_upload` then checks the
+    exact key.
+    """
+    domain = settings.DATAWAREHOUSE_BUCKET_DOMAIN
+    if not domain or not settings.DATAWAREHOUSE_BUCKET:
+        return Q(pk__in=[])
+
+    def team_folder(folder: str) -> Concat:
+        return Concat(
+            Value(f"https://{domain}/{folder}/team_"),
+            Cast("team_id", CharField()),
+            Value("/"),
+            output_field=CharField(),
+        )
+
+    in_upload_folder = Q(url_pattern__startswith=team_folder(FILE_UPLOADS_FOLDER)) | Q(
+        url_pattern__startswith=team_folder(LEGACY_UPLOADS_FOLDER)
+    )
+    return Q(external_data_source__isnull=True, credential__isnull=True) & in_upload_folder
+
+
 def _select_tables(
     team_id: int | None, table_ids: Iterable[str], migration_schemas: Mapping[str, list[ExternalDataSchema]]
 ) -> list[DataWarehouseTable]:
-    """Self-managed tables, plus every table the migration made a schema for, oldest first."""
+    """Self-managed tables, plus every table the migration made a schema for, oldest first.
+
+    A table that another source's schema already links to is left out: a table made from an upload
+    while the team had the flag waits for the first sync of its own file upload source.
+    """
     queryset = (
         DataWarehouseTable.raw_objects.exclude(deleted=True)
-        .filter(Q(external_data_source__isnull=True, credential__isnull=False) | Q(id__in=list(migration_schemas)))
+        .filter(
+            Q(external_data_source__isnull=True, credential__isnull=False)
+            | _uploaded_table_filter()
+            | Q(id__in=list(migration_schemas))
+        )
         .select_related("credential", "team")
         .order_by("created_at", "id")
     )
@@ -317,7 +425,16 @@ def _select_tables(
     ids = list(table_ids)
     if ids:
         queryset = queryset.filter(id__in=ids)
-    return list(queryset)
+    tables = list(queryset)
+    imported_elsewhere = set(
+        ExternalDataSchema.objects.filter(
+            table_id__in=[table.id for table in tables if table.external_data_source_id is None], deleted=False
+        )
+        .exclude(source__deleted=True)
+        .exclude(source__connection_metadata__has_key=MIGRATION_MARKER_KEY)
+        .values_list("table_id", flat=True)
+    )
+    return [table for table in tables if table.id not in imported_elsewhere]
 
 
 def _latest_jobs(schemas: Iterable[ExternalDataSchema]) -> dict[str, ExternalDataJob]:
@@ -331,6 +448,14 @@ def _latest_jobs(schemas: Iterable[ExternalDataSchema]) -> dict[str, ExternalDat
     return latest
 
 
+def _idle_reason(schema: ExternalDataSchema) -> str:
+    if schema.should_sync:
+        return "syncing is on; waiting for the first sync"
+    if SourceRegistry.get_source(ExternalDataSourceType(schema.source.source_type)).syncs_on_demand:
+        return "waiting for the next upload of the file"
+    return "syncing is off"
+
+
 def _awaiting_reason(table: DataWarehouseTable, schema: ExternalDataSchema, job: ExternalDataJob | None) -> str:
     ref = self_managed_table_ref(schema)
     if schema.table_id is not None:
@@ -338,7 +463,7 @@ def _awaiting_reason(table: DataWarehouseTable, schema: ExternalDataSchema, job:
     if ref is None or (table.url_pattern, table.format) != (ref.url_pattern, ref.format):
         return "the table changed after the migration, so a sync makes a separate table"
     if job is None:
-        return "syncing is on; waiting for the first sync" if schema.should_sync else "syncing is off"
+        return _idle_reason(schema)
     if job.status == ExternalDataJobStatus.RUNNING:
         return "the first sync is running"
     detail = job.latest_error or f"the last sync ended with status {job.status}"
@@ -399,12 +524,16 @@ def _evaluate_all(team_id: int | None, table_ids: Iterable[str], planner: _Plann
 
 
 def _find_or_create_source(table: DataWarehouseTable, plan: _TablePlan) -> ExternalDataSource:
-    """The group's source for the table's team, credential and bucket. Runs under the credential lock."""
+    """The group's source for the table's team, credential and bucket. Runs under the group lock."""
+    if not plan.shares_source:
+        return create_source_for_upload(
+            table, plan.job_inputs, connection_metadata={MIGRATION_MARKER_KEY: {"group_key": plan.group_key}}
+        )
     existing = (
         ExternalDataSource.objects.filter(
             team_id=table.team_id,
             source_type=plan.source.source_type,
-            connection_metadata__self_managed_migration__group_key=plan.location.group_key,
+            connection_metadata__self_managed_migration__group_key=plan.group_key,
             connection_metadata__self_managed_migration__credential_id=str(table.credential_id),
         )
         .exclude(deleted=True)
@@ -422,11 +551,11 @@ def _find_or_create_source(table: DataWarehouseTable, plan: _TablePlan) -> Exter
         source_type=plan.source.source_type,
         api_version=plan.source.default_version,
         job_inputs=plan.job_inputs,
-        description=f"Self-managed tables in {plan.location.bucket}",
+        description=plan.description,
         access_method=ExternalDataSource.AccessMethod.WAREHOUSE,
         connection_metadata={
             MIGRATION_MARKER_KEY: {
-                "group_key": plan.location.group_key,
+                "group_key": plan.group_key,
                 "credential_id": str(table.credential_id),
             }
         },
@@ -447,10 +576,14 @@ def _ensure_schema(table: DataWarehouseTable, plan: _TablePlan) -> ExternalDataS
     """The table's migration schema, created with its source when there is none yet.
 
     The credential row is the group lock: every table of one source shares it, and nothing else
-    locks it, so two runs can't create two sources or two schemas for the same table.
+    locks it, so two runs can't create two sources or two schemas for the same table. An uploaded
+    table has no credential and a source of its own, so its own row is the lock.
     """
     with transaction.atomic():
-        DataWarehouseCredential.objects.select_for_update().get(team_id=table.team_id, pk=_credential_id(table))
+        if plan.shares_source:
+            DataWarehouseCredential.objects.select_for_update().get(team_id=table.team_id, pk=_credential_id(table))
+        else:
+            DataWarehouseTable.raw_objects.select_for_update().get(team_id=table.team_id, pk=table.pk)
         schemas = _migration_schemas(table.team_id, [str(table.id)]).get(str(table.id), [])
         live = next((schema for schema in schemas if _is_live(schema)), None)
         if live is not None:
@@ -473,7 +606,7 @@ def _ensure_schema(table: DataWarehouseTable, plan: _TablePlan) -> ExternalDataS
             sync_type=ExternalDataSchema.SyncType.FULL_REFRESH,
             sync_type_config={
                 "schema_metadata": {
-                    **plan.definition.schema_metadata(),
+                    **plan.schema_metadata,
                     SCHEMA_PINNED_METADATA_KEY: True,
                     SCHEMA_SELF_MANAGED_TABLE_METADATA_KEY: ref.to_metadata(),
                 }
@@ -526,7 +659,7 @@ def _link(table: DataWarehouseTable, plan: _TablePlan, status: TableMigrationSta
         status=dataclasses.replace(
             status,
             state=TableMigrationState.AWAITING_SYNC,
-            reason="syncing is off",
+            reason=_idle_reason(schema),
             schema_id=str(schema.id),
             source_id=str(schema.source_id),
         ),

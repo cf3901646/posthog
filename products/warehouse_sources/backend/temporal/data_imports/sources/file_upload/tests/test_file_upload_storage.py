@@ -89,6 +89,27 @@ class TestFileUploadStorage(BaseTest):
         source.refresh_from_db()
         assert superseded_uploads(source) == []
 
+    @parameterized.expand([("reads_it_in_place", False), ("adopted_into_its_source", True)])
+    def test_a_legacy_file_a_migrated_table_read_is_deleted_only_once_no_table_reads_it(
+        self, _name: str, deleted: bool
+    ) -> None:
+        legacy = LegacyUpload(team_id=self.team.pk, filename="orders.csv")
+        entry = SupersededUpload(upload=legacy, superseded_at=SYNC_STARTED_AT - timedelta(minutes=1))
+        source = self._source(self._inputs(CURRENT_ID), entry)
+        DataWarehouseTable.objects.create(
+            team=self.team,
+            name="orders",
+            format="CSVWithNames",
+            url_pattern=legacy.url_pattern,
+            columns={},
+            external_data_source=source if deleted else None,
+        )
+
+        released = release_superseded_uploads(str(source.pk), self.team.pk, SYNC_STARTED_AT)
+
+        assert released == ([legacy] if deleted else [])
+        assert self._removed() == ([f"{BUCKET}/managed/team_{self.team.pk}/orders.csv"] if deleted else [])
+
     def test_deleting_a_source_deletes_its_files_inside_the_team_folder(self) -> None:
         legacy = LegacyUpload(team_id=self.team.pk, filename="orders.csv")
         source = self._source(

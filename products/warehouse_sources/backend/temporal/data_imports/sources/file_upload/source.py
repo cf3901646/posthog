@@ -46,6 +46,7 @@ from products.warehouse_sources.backend.temporal.data_imports.sources.file_uploa
     delete_source_uploads,
     release_superseded_uploads,
     superseded_uploads,
+    upload_from_job_inputs,
 )
 from products.warehouse_sources.backend.types import ExternalDataSourceType
 
@@ -223,6 +224,14 @@ class FileUploadSource(SimpleSource[FileUploadInputs]):
             chunk_size_bytes=CHUNK_SIZE_BYTES,
             preserve_column_names=metadata.get("preserve_column_names") is True,
         )
+
+    def manual_sync_refusal(self, source_model: ExternalDataSource) -> str | None:
+        # A source the self-managed migration made reads no file until the next upload for its table.
+        try:
+            upload_from_job_inputs(source_model.team_id, source_model.job_inputs)
+        except InvalidUploadError:
+            return "This table syncs when you upload a new file for it. Upload the file to import it."
+        return None
 
     def has_cleanup_after_sync(self, source_model: ExternalDataSource) -> bool:
         return bool(superseded_uploads(source_model))

@@ -18,6 +18,10 @@ from products.warehouse_sources.backend.models.external_data_job import External
 from products.warehouse_sources.backend.models.external_data_schema import ExternalDataSchema
 from products.warehouse_sources.backend.models.external_data_source import ExternalDataSource
 from products.warehouse_sources.backend.models.table import DataWarehouseTable
+from products.warehouse_sources.backend.self_managed_migration import MigrationOptions, migrate_self_managed_tables
+from products.warehouse_sources.backend.temporal.data_imports.pipelines.pipeline_sync import (
+    find_replaced_self_managed_table,
+)
 
 VIEW_MODULE = "products.data_warehouse.backend.presentation.views.table"
 MODEL_MODULE = "products.warehouse_sources.backend.models.table"
@@ -740,3 +744,124 @@ class TestFileUploadSources(APIBaseTest):
         assert sorted(self.s3.removed) == sorted(
             [f"{prefix}{NEW_UPLOAD_ID}/orders_v2.csv", f"{prefix}{UPLOAD_ID}/orders.csv"]
         )
+
+    def _migrated_table(self, key: str) -> tuple[DataWarehouseTable, ExternalDataSchema]:
+        table = DataWarehouseTable.objects.create(
+            team=self.team,
+            name="orders",
+            format="CSVWithNames",
+            url_pattern=f"https://warehouse.posthog.test/{key.format(team=self.team.pk, upload=UPLOAD_ID)}",
+            columns=dict(FAKE_COLUMNS),
+            options={"csv_allow_double_quotes": False},
+        )
+        [outcome] = migrate_self_managed_tables(MigrationOptions(team_id=self.team.pk, live_run=True))
+        assert outcome.action == "linked", outcome
+        schema = ExternalDataSchema.objects.select_related("source").get(pk=outcome.status.schema_id)
+        return table, schema
+
+    def _legacy_file_action(self, filename: str = "orders_v2.csv"):
+        return self.client.post(
+            f"{self.base_url}/file/",
+            {"file": SimpleUploadedFile(filename, b"id,total\n1,2\n"), "name": "orders", "format": "CSVWithNames"},
+            format="multipart",
+        )
+
+    @parameterized.expand(
+        [
+            ("upload_folder_replace_file", "file_uploads/team_{team}/{upload}/orders.csv", "replace_file"),
+            ("legacy_folder_replace_file", "managed/team_{team}/orders.csv", "replace_file"),
+            ("legacy_folder_file_action", "managed/team_{team}/orders.csv", "file"),
+        ]
+    )
+    def test_a_new_file_for_a_migrated_table_starts_the_sync_that_adopts_it(
+        self, _name: str, key: str, path: str
+    ) -> None:
+        self.flag.side_effect = lambda flag_key, *args, **kwargs: flag_key in (OBJECT_STORAGE_FLAG, "warehouse-api")
+        table, schema = self._migrated_table(key)
+        old_url = table.url_pattern
+        self.get_columns.return_value = dict(REPLACEMENT_COLUMNS)
+
+        with patch(f"{VIEW_MODULE}.boto3.client") as legacy_s3:
+            if path == "replace_file":
+                response = self._replace(table)
+            else:
+                response = self._legacy_file_action()
+
+        expected_status = status.HTTP_202_ACCEPTED if path == "replace_file" else status.HTTP_201_CREATED
+        assert response.status_code == expected_status, response.json()
+        assert response.json()["id"] == str(table.id)
+        # The legacy action no longer writes over the file the table reads.
+        legacy_s3.assert_not_called()
+        schema.refresh_from_db()
+        schema.source.refresh_from_db()
+        job_inputs = schema.source.job_inputs
+        if path == "replace_file":
+            assert job_inputs["upload_id"] == NEW_UPLOAD_ID
+        else:
+            [written] = self.s3.written
+            assert written == (f"test-bucket/file_uploads/team_{self.team.pk}/{job_inputs['upload_id']}/orders_v2.csv")
+        assert (job_inputs["filename"], job_inputs["file_format"]) == ("orders_v2.csv", "csv")
+        [superseded] = schema.source.connection_metadata["file_upload"]["superseded"]
+        if key.startswith("managed/"):
+            assert superseded["legacy_filename"] == "orders.csv"
+        else:
+            assert (superseded["upload_id"], superseded["filename"]) == (UPLOAD_ID, "orders.csv")
+        assert schema.schema_metadata is not None
+        assert schema.schema_metadata["csv"]["column_types"] == {"id": "integer", "placed_at": "datetime"}
+        assert schema.schema_metadata["self_managed_table"]["table_id"] == str(table.id)
+        self.schedule.assert_called_once_with(schema, create=True, should_sync=False, trigger_immediately=False)
+        assert self.trigger_count == 1
+        assert self.trigger.call_args.kwargs["billable"] is True
+        # Until that sync publishes, the table reads its old file, and the sync still adopts the same row.
+        table.refresh_from_db()
+        assert (table.name, table.url_pattern, table.external_data_source_id) == ("orders", old_url, None)
+        assert find_replaced_self_managed_table(schema, schema.source) == table
+        assert self.s3.removed == []
+
+    @parameterized.expand(["sync_running", "table_changed_since_migration"])
+    def test_a_migrated_table_refuses_a_new_file_it_cant_take(self, case: str) -> None:
+        table, schema = self._migrated_table("managed/team_{team}/orders.csv")
+        if case == "sync_running":
+            ExternalDataJob.objects.create(
+                team=self.team, pipeline=schema.source, schema=schema, status=ExternalDataJob.Status.RUNNING
+            )
+        else:
+            DataWarehouseTable.objects.filter(pk=table.pk).update(
+                url_pattern=f"https://warehouse.posthog.test/managed/team_{self.team.pk}/other.csv"
+            )
+
+        response = self._replace(table)
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST, response.json()
+        schema.source.refresh_from_db()
+        assert schema.source.job_inputs["upload_id"] == ""
+        assert "file_upload" not in (schema.source.connection_metadata or {})
+        self.trigger.assert_not_called()
+
+    @parameterized.expand(["reload", "resync"])
+    def test_a_migrated_table_cant_sync_before_its_next_upload(self, action: str) -> None:
+        _, schema = self._migrated_table("managed/team_{team}/orders.csv")
+
+        response = self.client.post(f"/api/environments/{self.team.pk}/external_data_schemas/{schema.id}/{action}/")
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert "Upload the file" in response.json()["message"]
+        assert not ExternalDataJob.objects.filter(team=self.team).exists()
+        self.trigger.assert_not_called()
+
+    @patch(f"{SOURCE_VIEWS}.delete_discover_schemas_schedule")
+    @patch(f"{SOURCE_VIEWS}.delete_external_data_schedule")
+    @patch(f"{SOURCE_VIEWS}.bulk_delete_external_data_schedules", return_value=[])
+    def test_deleting_a_migrated_source_never_deletes_the_file_its_table_reads(self, *_mocks: object) -> None:
+        table, schema = self._migrated_table("managed/team_{team}/orders.csv")
+        self.get_columns.return_value = dict(REPLACEMENT_COLUMNS)
+        # The sync of the new file never finishes, so the table still reads the old one.
+        assert self._replace(table).status_code == status.HTTP_202_ACCEPTED
+
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.delete(f"/api/environments/{self.team.pk}/external_data_sources/{schema.source_id}")
+
+        assert response.status_code == status.HTTP_204_NO_CONTENT
+        table.refresh_from_db()
+        assert table.deleted is False
+        assert self.s3.removed == [f"test-bucket/file_uploads/team_{self.team.pk}/{NEW_UPLOAD_ID}/orders_v2.csv"]

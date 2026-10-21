@@ -136,6 +136,15 @@ def source_syncs_on_demand(source_type: str) -> bool:
     return source.syncs_on_demand is True
 
 
+def manual_sync_refusal(source_model: ExternalDataSource) -> str | None:
+    try:
+        source = SourceRegistry.get_source(ExternalDataSourceType(source_model.source_type))
+    except Exception as e:
+        capture_exception(e)
+        return None
+    return source.manual_sync_refusal(source_model)
+
+
 def source_row_filter_columns(source_type: str, schema_name: str) -> tuple[Any, ...] | None:
     """The columns a row filter on this schema may use, or None when any column of the table may.
 
@@ -287,6 +296,10 @@ def _trigger_schema_sync(instance: ExternalDataSchema) -> None:
 
 
 def resync_schema(instance: ExternalDataSchema) -> Response:
+    refusal = manual_sync_refusal(instance.source)
+    if refusal is not None:
+        return Response(status=status.HTTP_400_BAD_REQUEST, data={"message": refusal})
+
     if is_any_external_data_schema_paused(instance.team_id):
         return Response(
             status=status.HTTP_400_BAD_REQUEST,
@@ -2171,6 +2184,10 @@ class ExternalDataSchemaViewset(TeamAndOrgViewSetMixin, viewsets.ModelViewSet):
     @action(methods=["POST"], detail=True)
     def reload(self, request: Request, *args: Any, **kwargs: Any):
         instance: ExternalDataSchema = self.get_object()
+
+        refusal = manual_sync_refusal(instance.source)
+        if refusal is not None:
+            return Response(status=status.HTTP_400_BAD_REQUEST, data={"message": refusal})
 
         if is_any_external_data_schema_paused(self.team_id):
             return Response(
