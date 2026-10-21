@@ -13,6 +13,7 @@ The state of each table comes from the rows themselves: a migration source carri
 continues where it stopped.
 """
 
+import re
 import uuid
 import dataclasses
 from collections import defaultdict
@@ -221,7 +222,9 @@ class _Planner:
         if self._has_source_rules(table):
             # A table in a source falls back to the rules for sources, which never reached a
             # self-managed table, so moving it could take access away from members who have it.
-            return "the project has access rules for sources, which would start to apply to the table"
+            # Rules for the whole warehouse don't reach the new source, so a member they shut out
+            # could read the table's files through it.
+            return "the project has access rules for sources or for the warehouse, which the move would change"
         try:
             location = parse_self_managed_url(table.url_pattern)
             source = self._sources.get(location.service)
@@ -251,8 +254,9 @@ class _Planner:
 
     def _has_source_rules(self, table: DataWarehouseTable) -> bool:
         if table.team_id not in self._teams_with_source_rules:
-            self._teams_with_source_rules[table.team_id] = resource_has_rules(
-                team_id=table.team_id, resource="external_data_source"
+            self._teams_with_source_rules[table.team_id] = any(
+                resource_has_rules(team_id=table.team_id, resource=resource)
+                for resource in ("external_data_source", "warehouse_objects")
             )
         return self._teams_with_source_rules[table.team_id]
 
@@ -398,6 +402,26 @@ def _evaluate_all(team_id: int | None, table_ids: Iterable[str], planner: _Plann
     return [_evaluate(table, schemas.get(str(table.id), []), jobs, planner) for table in tables]
 
 
+def _free_prefix(team_id: int, plan: _TablePlan) -> str | None:
+    """A table prefix no other source of the type uses, so the new source's table names can't clash.
+
+    Like a source a user creates, the first source of a type needs none.
+    """
+    sources = ExternalDataSource.objects.filter(team_id=team_id, source_type=plan.source.source_type).exclude(
+        deleted=True
+    )
+    taken = {(prefix or "").strip() for prefix in sources.values_list("prefix", flat=True)}
+    if "" not in taken:
+        return None
+    base = re.sub(r"[^A-Za-z0-9_]", "_", plan.location.bucket).strip("_").lower() or "bucket"
+    if not base[0].isalpha():
+        base = f"bucket_{base}"
+    candidate, suffix = base, 2
+    while candidate in taken or ExternalDataSource.is_system_managed_prefix(candidate):
+        candidate, suffix = f"{base}_{suffix}", suffix + 1
+    return candidate
+
+
 def _find_or_create_source(table: DataWarehouseTable, plan: _TablePlan) -> ExternalDataSource:
     """The group's source for the table's team, credential and bucket. Runs under the credential lock."""
     existing = (
@@ -414,6 +438,7 @@ def _find_or_create_source(table: DataWarehouseTable, plan: _TablePlan) -> Exter
     if existing is not None:
         return existing
     source = ExternalDataSource.objects.create(
+        prefix=_free_prefix(table.team_id, plan),
         source_id=str(uuid.uuid4()),
         connection_id=str(uuid.uuid4()),
         destination_id=str(uuid.uuid4()),

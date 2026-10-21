@@ -186,6 +186,8 @@ class CsvOptions:
     column_types: tuple[CsvColumnType, ...] = ()
     # Read an unquoted `\N` as null, as ClickHouse does. Only tables moved from a self-managed table set it.
     null_marker: bool = False
+    # The field delimiter for every file. None picks it from the file name: tabs for `.tsv`, else commas.
+    delimiter: str | None = None
 
 
 @frozen

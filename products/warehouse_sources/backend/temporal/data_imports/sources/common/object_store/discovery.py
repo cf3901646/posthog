@@ -92,6 +92,8 @@ class TableDefinition:
             csv["column_types"] = {column.name: column.to_metadata() for column in self.csv.column_types}
         if self.csv.null_marker:
             csv["null_marker"] = True
+        if self.csv.delimiter is not None:
+            csv["delimiter"] = self.csv.delimiter
         metadata: dict[str, Any] = {
             "kind": self.kind,
             "scope": self.scope,
@@ -117,6 +119,7 @@ class TableDefinition:
         source_format = metadata.get("source_format", file_format)
         pattern = metadata.get("pattern")
         csv = metadata.get("csv") or {}
+        delimiter = csv.get("delimiter") if isinstance(csv, dict) else None
         if (
             kind not in ("files", "delta")
             or (kind == "files" and scope not in _FILE_SCOPES)
@@ -139,6 +142,7 @@ class TableDefinition:
                 allow_double_quotes=bool(csv.get("allow_double_quotes", True)),
                 column_types=csv_column_types_from_metadata(csv.get("column_types")),
                 null_marker=csv.get("null_marker") is True,
+                delimiter=delimiter if isinstance(delimiter, str) and len(delimiter) == 1 else None,
             ),
             pattern=pattern,
             source_format=cast(FileFormatChoice, source_format),

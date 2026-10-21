@@ -250,6 +250,19 @@ def _parse_number(target: pa.DataType) -> Callable[[pa.Array], pa.Array]:
     return lambda values: pc.cast(_without_plus_sign(values), target)
 
 
+def _parse_decimal(target: pa.DataType, scale: int) -> Callable[[pa.Array], pa.Array]:
+    # ClickHouse drops the fractional digits a decimal's scale can't hold, rather than refusing the value.
+    excess_digits = rf"^([+-]?\d*\.\d{{{scale}}})\d+$" if scale else r"^([+-]?\d+)\.\d*$"
+
+    def parse(values: pa.Array) -> pa.Array:
+        truncated = cast(
+            pa.Array, pc.replace_substring_regex(_without_plus_sign(values), pattern=excess_digits, replacement=r"\1")
+        )
+        return pc.cast(truncated, target)
+
+    return parse
+
+
 def _parse_unsigned(values: pa.Array) -> pa.Array:
     # Read as UInt64 first, so a negative or too large value fails like it does in ClickHouse.
     return pc.cast(pc.cast(_without_plus_sign(values), pa.uint64()), _UNSIGNED_STORAGE)
@@ -306,6 +319,8 @@ def _parser(column_type: CsvColumnType) -> Callable[[pa.Array], pa.Array]:
         return _parse_datetime(column_type.timezone)
     if column_type.kind == "unsigned":
         return _parse_unsigned
+    if column_type.kind == "decimal":
+        return _parse_decimal(column_type.arrow_type, column_type.scale or 0)
     return _parse_number(column_type.arrow_type)
 
 

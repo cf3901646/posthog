@@ -65,6 +65,8 @@ _FORMATS: dict[str, FileFormatChoice] = {
 }
 # Column types the import pipeline writes as JSON strings, which breaks queries that read their parts.
 _NESTED_TYPES = frozenset({"Array", "Map", "Tuple", "Nested", "JSON", "Object", "Variant", "Dynamic"})
+# Types ClickHouse reads from JSON strings, which the JSON import keeps as strings.
+_JSON_TEXT_TYPES = frozenset({"Date", "Date32", "DateTime", "DateTime64"})
 # Columns the import adds to every row. A stored column of the same name would lose its values to them.
 _FILE_COLUMNS = frozenset({FILE_PATH_COLUMN, FILE_MODIFIED_AT_COLUMN, FILE_ROW_NUMBER_COLUMN})
 
@@ -129,7 +131,8 @@ def parse_self_managed_url(url: str) -> SelfManagedLocation:
     if parsed.username or parsed.password or parsed.port:
         raise UnmappableTableError("the URL names a user or a port")
     host = (parsed.hostname or "").lower()
-    path = unquote(parsed.path).lstrip("/")
+    # Only the separator after the host goes: a further slash is part of the object key.
+    path = unquote(parsed.path).removeprefix("/")
     if host.endswith(".amazonaws.com") or host.endswith(".amazonaws.com.cn"):
         location = _s3_location(host, path)
     elif host == _GCS_HOST:
@@ -147,6 +150,8 @@ def parse_self_managed_url(url: str) -> SelfManagedLocation:
         raise UnmappableTableError(f"'{host}' isn't a storage host PostHog can import from")
     if not location.bucket or has_glob(location.bucket) or has_glob(location.account or ""):
         raise UnmappableTableError("the URL doesn't name one bucket")
+    if location.key.startswith("/") or "//" in location.key:
+        raise UnmappableTableError("the URL path has an empty segment, which the import can't read")
     if any(segment in (".", "..") for segment in location.key.split("/")):
         raise UnmappableTableError("the URL path has a '.' or '..' segment")
     return location
@@ -190,6 +195,16 @@ def _refuse_padded_header_names(columns: Mapping[str, Any] | None) -> None:
             )
 
 
+def _refuse_json_text_types(columns: Mapping[str, Any] | None) -> None:
+    # A JSON file holds dates and times as strings, and the JSON import keeps them as strings.
+    for name, clickhouse_type in stored_clickhouse_types(columns).items():
+        base = clickhouse_base_type(clickhouse_type)
+        if base in _JSON_TEXT_TYPES:
+            raise UnmappableTableError(
+                f"the column '{name}' is a {base}, and the JSON import would store it as text, not as a {base}"
+            )
+
+
 def table_definition_for(
     name: str,
     location: SelfManagedLocation,
@@ -230,6 +245,8 @@ def table_definition_for(
         raise UnmappableTableError(str(e)) from e
     if file_format == "csv":
         _refuse_padded_header_names(columns)
+    if file_format == "jsonl":
+        _refuse_json_text_types(columns)
     return TableDefinition(
         name=name,
         kind="files",
@@ -243,6 +260,8 @@ def table_definition_for(
             column_types=column_types,
             # ClickHouse reads an unquoted `\N` as null in a CSV file.
             null_marker=True,
+            # ClickHouse reads the declared format whatever the file is called, so a `.tsv` file is still CSV.
+            delimiter=",",
         ),
         pattern=pattern,
         source_format=file_format,

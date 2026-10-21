@@ -158,6 +158,10 @@ class TestSelfManagedMigration(_MigrationTest):
         assert source_of(virtual_hosted).pk == source_of(path_style).pk
         assert len({source_of(t).pk for t in (virtual_hosted, other_bucket, other_key)}) == 3
         assert ExternalDataSource.objects.filter(team=self.team).count() == 3
+        # Two sources of one type can't both go without a prefix, or their table names would clash.
+        prefixes = [source_of(t).prefix or "" for t in (virtual_hosted, other_bucket, other_key)]
+        assert prefixes.count("") == 1 and len(set(prefixes)) == 3
+        assert set(prefixes) - {""} <= {"exports", "archive"}
         assert source_of(other_bucket).job_inputs["bucket"] == "archive"
         assert source_of(other_key).job_inputs["access_key_id"] == "AKIASECOND"
         assert (source_of(virtual_hosted).connection_metadata or {})[MIGRATION_MARKER_KEY] == {
@@ -356,12 +360,21 @@ class TestSelfManagedMigration(_MigrationTest):
             assert "own access rules" in (outcome.status.reason or "")
             assert _schemas_for(table) == []
 
-    @parameterized.expand([("member_rule_on_sources", True), ("default_rule_on_sources", False)])
-    def test_a_project_with_access_rules_for_sources_is_skipped(self, _name: str, for_member: bool) -> None:
+    @parameterized.expand(
+        [
+            ("member_rule_on_sources", "external_data_source", True),
+            ("default_rule_on_sources", "external_data_source", False),
+            ("member_rule_on_the_warehouse", "warehouse_objects", True),
+            ("default_rule_on_the_warehouse", "warehouse_objects", False),
+        ]
+    )
+    def test_a_project_with_access_rules_for_sources_is_skipped(
+        self, _name: str, resource: str, for_member: bool
+    ) -> None:
         table = self._table()
         AccessControl.objects.create(
             team=self.team,
-            resource="external_data_source",
+            resource=resource,
             resource_id=None,
             access_level="none",
             organization_member=(

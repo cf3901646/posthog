@@ -353,7 +353,7 @@ def iter_file_tables(
     else:
         binary = cast(IO[bytes], gzip.GzipFile(fileobj=stream)) if is_compressed(stored.path) else stream
         if file_format == "csv":
-            delimiter = "\t" if stored.path.lower().endswith(TSV_SUFFIXES) else ","
+            delimiter = csv_options.delimiter or ("\t" if stored.path.lower().endswith(TSV_SUFFIXES) else ",")
             tables = iter_csv_tables(binary, csv_options, delimiter, stored.path, logger)
         else:
             tables = iter_jsonl_tables(binary, stored.path)

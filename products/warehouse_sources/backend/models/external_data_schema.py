@@ -2592,6 +2592,8 @@ def sync_old_schemas_with_new_schemas(
         seeded_metadata = (schema_metadata_by_name or {}).get(schema)
         deleted_obj = (
             ExternalDataSchema.objects.filter(team_id=team_id, source_id=source_id, name=schema, deleted=True)
+            # A deleted migration schema records that its table stays self-managed, so discovery must not revive it.
+            .exclude(sync_type_config__schema_metadata__has_key=SCHEMA_SELF_MANAGED_TABLE_METADATA_KEY)
             .order_by("-updated_at", "-created_at")
             .first()
         )

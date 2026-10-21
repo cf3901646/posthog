@@ -10,6 +10,7 @@ from parameterized import parameterized
 from products.warehouse_sources.backend.models.external_data_schema import (
     SCHEMA_PINNED_METADATA_KEY,
     SCHEMA_RESOURCE_ID_METADATA_KEY,
+    SCHEMA_SELF_MANAGED_TABLE_METADATA_KEY,
     ExternalDataSchema,
     auto_enable_new_schemas,
     schema_name_matches_auto_sync_patterns,
@@ -268,6 +269,30 @@ class TestSchemaDiscoveryReconcile(BaseTest):
         assert sync_result.deleted == []
         assert schema.should_sync is (should_sync and not expect_disabled)
         assert mock_pause.called is expect_disabled
+
+    def test_discovery_does_not_revive_a_deleted_migration_schema(self) -> None:
+        source = self._make_source()
+        ref = {"table_id": str(uuid.uuid4()), "url_pattern": "https://b.s3.amazonaws.com/o/*.csv", "format": "CSV"}
+        tombstone = ExternalDataSchema.objects.create(
+            team_id=self.team.pk,
+            source_id=source.pk,
+            name="orders",
+            should_sync=False,
+            deleted=True,
+            sync_type_config={
+                "schema_metadata": {SCHEMA_PINNED_METADATA_KEY: True, SCHEMA_SELF_MANAGED_TABLE_METADATA_KEY: ref}
+            },
+        )
+
+        sync_old_schemas_with_new_schemas({"orders": None}, source_id=str(source.pk), team_id=self.team.pk)
+
+        tombstone.refresh_from_db()
+        assert tombstone.deleted is True
+        revived = ExternalDataSchema.objects.get(
+            team_id=self.team.pk, source_id=source.pk, name="orders", deleted=False
+        )
+        assert revived.pk != tombstone.pk
+        assert SCHEMA_SELF_MANAGED_TABLE_METADATA_KEY not in (revived.sync_type_config or {}).get("schema_metadata", {})
 
     def test_failed_pause_leaves_the_table_on_and_still_pauses_the_others(self) -> None:
         # A row written off while its schedule still runs keeps billing, and the next discovery run

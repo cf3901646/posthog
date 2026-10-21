@@ -36,8 +36,14 @@ from products.warehouse_sources.backend.temporal.data_imports.sources.common.obj
     TOO_MANY_FILES_ERROR,
     ObjectStorageError,
 )
-from products.warehouse_sources.backend.temporal.data_imports.sources.common.object_store.filesystem import ObjectStore
-from products.warehouse_sources.backend.temporal.data_imports.sources.common.object_store.formats import iter_csv_tables
+from products.warehouse_sources.backend.temporal.data_imports.sources.common.object_store.filesystem import (
+    ObjectStore,
+    StoredObject,
+)
+from products.warehouse_sources.backend.temporal.data_imports.sources.common.object_store.formats import (
+    iter_csv_tables,
+    iter_file_tables,
+)
 from products.warehouse_sources.backend.temporal.data_imports.sources.common.object_store.globs import (
     compile_clickhouse_glob,
     glob_key_prefix,
@@ -174,6 +180,8 @@ class TestParseSelfManagedUrl:
             ("path_style_without_bucket", "https://s3.us-east-1.amazonaws.com/"),
             ("glob_in_bucket", "https://s3.us-east-1.amazonaws.com/exports-*/a.csv"),
             ("dot_dot_segment", "https://exports.s3.us-east-1.amazonaws.com/a/../b.csv"),
+            ("key_with_a_leading_slash", "https://exports.s3.us-east-1.amazonaws.com//orders.csv"),
+            ("key_with_an_empty_segment", "https://storage.googleapis.com/lake/orders//a.csv"),
             ("azure_data_lake_endpoint", "https://examplestore.dfs.core.windows.net/exports/a.csv"),
             ("azure_other_cloud", "https://examplestore.blob.core.chinacloudapi.cn/exports/a.csv"),
             ("azure_without_container", "https://examplestore.blob.core.windows.net/"),
@@ -383,6 +391,7 @@ class TestTableDefinition:
                 "allow_double_quotes": False,
                 "column_types": {"id": "integer", "Order Total": "float"},
                 "null_marker": True,
+                "delimiter": ",",
             },
             "preserve_column_names": True,
         }
@@ -514,6 +523,13 @@ class TestTableDefinition:
 
         with pytest.raises(UnmappableTableError, match=f"'{column}'"):
             table_definition_for("orders", parse_self_managed_url(url), table_format, columns, None)
+
+    @parameterized.expand([("Date",), ("Nullable(Date32)",), ("DateTime",), ("Nullable(DateTime64(9))",)])
+    def test_json_dates_and_times_are_refused(self, column_type: str) -> None:
+        location = parse_self_managed_url("https://storage.googleapis.com/lake/orders/*.jsonl")
+
+        with pytest.raises(UnmappableTableError, match="'created'"):
+            table_definition_for("orders", location, "JSONEachRow", {"id": "Int64", "created": column_type}, None)
 
     def test_csv_header_names_with_surrounding_spaces_are_refused(self) -> None:
         location = parse_self_managed_url("https://storage.googleapis.com/lake/orders/*.csv")
@@ -714,8 +730,8 @@ class TestCsvColumnTypes:
             (
                 "decimals_keep_their_scale",
                 CsvColumnType(name="value", kind="decimal", precision=10, scale=2),
-                ["1.25", "-3.1", "7", "1.255", "x"],
-                [Decimal("1.25"), Decimal("-3.10"), Decimal("7.00"), None, None],
+                ["1.25", "-3.1", "7", "1.255", "x", "123456789012.5"],
+                [Decimal("1.25"), Decimal("-3.10"), Decimal("7.00"), Decimal("1.25"), None, None],
                 2,
             ),
             (
@@ -859,6 +875,14 @@ class TestCsvColumnTypes:
         [table] = list(iter_csv_tables(io.BytesIO(content), CsvOptions(null_marker=null_marker)))
 
         assert table.column("label").to_pylist() == expected
+
+    def test_a_fixed_delimiter_wins_over_the_file_name(self) -> None:
+        content = io.BytesIO(b"id,label\n1,a\n")
+        stored = StoredObject(path="orders.tsv", size=0, modified_at=datetime(2024, 1, 1, tzinfo=UTC))
+
+        [table] = list(iter_file_tables(content, stored, "csv", CsvOptions(delimiter=",")))
+
+        assert table.column("label").to_pylist() == ["a"]
 
     def test_new_csv_sources_still_read_strings(self) -> None:
         [table] = list(iter_csv_tables(io.BytesIO(b"id\n1\n"), CsvOptions()))
