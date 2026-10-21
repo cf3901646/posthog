@@ -86,6 +86,7 @@ Everhour fail:stall-budget
 ExchangeRatesApi fail:stall-budget
 Fastly fail:safe-point,stall-budget
 Featurebase not-checkable:database
+FileUpload not-checkable:no-request
 Finage fail:stall-budget
 FinancialModelling fail:safe-point,stall-budget
 Finnhub fail:stall-budget
