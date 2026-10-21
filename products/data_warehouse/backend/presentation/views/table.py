@@ -43,7 +43,6 @@ from products.warehouse_sources.backend.facade.api import (
     build_file_upload_s3_path,
     build_file_upload_url_pattern,
     hosted_upload_s3_path,
-    server_held_table_options,
 )
 from products.warehouse_sources.backend.facade.hogql import (
     CLICKHOUSE_HOGQL_MAPPING,
@@ -393,15 +392,7 @@ class TableSerializer(UserAccessControlSerializerMixin, serializers.ModelSeriali
     def validate_options(self, options):
         if not isinstance(options, dict):
             raise serializers.ValidationError("Options must be a JSON object.")
-        if reserved := server_held_table_options(options):
-            raise serializers.ValidationError(f"PostHog sets {', '.join(reserved)}, so it can't be written.")
         return options
-
-    def to_representation(self, instance):
-        data = super().to_representation(instance)
-        if "options" in data:
-            data["options"] = instance.client_visible_options()
-        return data
 
     def validate_name(self, name):
         if self.instance and self.instance.name == name:
@@ -570,9 +561,6 @@ class TableViewSet(TeamAndOrgViewSetMixin, AccessControlViewSetMixin, viewsets.M
             if access_secret is not None:
                 credential.access_secret = access_secret
             credential.save()
-
-        if "options" in validated_data:
-            validated_data["options"] = instance.with_server_held_options(validated_data["options"])
 
         old_csv_allow_double_quotes = instance.csv_allow_double_quotes
         for attr, value in validated_data.items():

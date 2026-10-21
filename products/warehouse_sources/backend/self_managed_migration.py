@@ -1,45 +1,38 @@
-"""Copy self-managed warehouse tables into the object storage sources, free of charge.
+"""Move self-managed warehouse tables into the object storage sources, without a copy.
 
 A self-managed table is read in place from a customer bucket. Each one gets an object storage source
-for its bucket and a schema that reads exactly the table's files, and then one non-billable sync. The
-sync's last step points the existing table row at the copy in PostHog storage (see
-`DataWarehouseTable.adopt_into_source`), so the row id and the name stay and existing queries keep
-working. Until that step the row reads the customer bucket as before, so a failed or stalled copy
-changes nothing a query sees. The schema stays turned off, so nothing is billed until the user turns
-syncing on.
+for its bucket and a turned-off schema that reads exactly the table's files. The schema does not link
+to the table: it names the table in its pinned `schema_metadata` (see `SelfManagedTableRef`), and the
+table stays as it is, read from the customer bucket and not billed. When the user turns syncing on,
+the first sync is a normal billable sync, and its last step points the existing table row at the copy
+in PostHog storage (see `find_replaced_self_managed_table` and `DataWarehouseTable.adopt_into_source`),
+so the row id and the name stay and existing queries keep working.
 
-Progress is kept on the rows themselves: a marker in the source's `connection_metadata` and in the
-table's `options`. Running the migration again therefore continues where it stopped.
+The state of each table comes from the rows themselves: a migration source carries a marker in its
+`connection_metadata`, and its schemas name their tables. Running the migration again therefore
+continues where it stopped.
 """
 
 import uuid
 import dataclasses
+from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping
 from enum import StrEnum
 from typing import Any, Literal
 
 from django.db import transaction
 from django.db.models import Q
-from django.utils import timezone
 
 import boto3
 import structlog
 from botocore.config import Config as BotoConfig
 from botocore.exceptions import BotoCoreError, ClientError
-from temporalio.client import Client
-from temporalio.exceptions import WorkflowAlreadyStartedError
 
 from posthog.dataclasses import frozen
 from posthog.models.team import Team
 
 from products.access_control.backend.facade.api import object_ids_with_rules, resource_has_rules
-from products.data_warehouse.backend.facade.api import delete_external_data_schedule, sync_external_data_job_workflow
-from products.warehouse_sources.backend.ad_hoc_sync import (
-    SchedulePauseError,
-    SyncStillRunningError,
-    WorkflowStartError,
-    trigger_ad_hoc_sync,
-)
+from products.data_warehouse.backend.facade.api import delete_external_data_schedule
 from products.warehouse_sources.backend.models.credential import DataWarehouseCredential
 from products.warehouse_sources.backend.models.external_data_destination import (
     ExternalDataSourceDestination,
@@ -48,10 +41,13 @@ from products.warehouse_sources.backend.models.external_data_destination import 
 from products.warehouse_sources.backend.models.external_data_job import ExternalDataJob
 from products.warehouse_sources.backend.models.external_data_schema import (
     SCHEMA_PINNED_METADATA_KEY,
+    SCHEMA_SELF_MANAGED_TABLE_METADATA_KEY,
     ExternalDataSchema,
+    SelfManagedTableRef,
+    self_managed_table_ref,
 )
 from products.warehouse_sources.backend.models.external_data_source import ExternalDataSource
-from products.warehouse_sources.backend.models.table import SELF_MANAGED_MIGRATION_OPTION, DataWarehouseTable
+from products.warehouse_sources.backend.models.table import DataWarehouseTable
 from products.warehouse_sources.backend.presentation.views.external_data_source.helpers import (
     source_feature_flag_missing,
 )
@@ -79,26 +75,26 @@ from products.warehouse_sources.backend.types import ExternalDataJobStatus
 
 logger = structlog.get_logger(__name__)
 
-MIGRATION_MARKER_KEY = SELF_MANAGED_MIGRATION_OPTION
-WORKFLOW_ID_PREFIX = "self-managed-migration"
-# The marker state between storing a workflow id and Temporal accepting the run.
-_DISPATCHING = "dispatching"
+# The `connection_metadata` key of a source the migration created.
+MIGRATION_MARKER_KEY = "self_managed_migration"
 DEFAULT_ABANDON_REASON = "Left self-managed by an operator."
+_DELETED_REASON = "its migration schema or source was deleted"
 
 # Resolves the region of an S3 bucket whose URL names none, or returns None when it can't.
 BucketRegionResolver = Callable[[str, SelfManagedCredential], str | None]
 
 
 class TableMigrationState(StrEnum):
+    # Not linked to a source yet.
     PENDING = "pending"
-    RUNNING = "running"
+    # Has a migration schema, and the table still reads its own bucket until a sync replaces it.
+    AWAITING_SYNC = "awaiting_sync"
     MIGRATED = "migrated"
-    FAILED = "failed"
     ABANDONED = "abandoned"
     SKIPPED = "skipped"
 
 
-MigrationAction = Literal["none", "would_start", "started", "would_retry", "retried", "start_failed", "limit_reached"]
+MigrationAction = Literal["none", "would_link", "linked", "link_failed", "limit_reached"]
 AbandonAction = Literal["would_abandon", "abandoned", "refused"]
 
 
@@ -117,7 +113,6 @@ class TableMigrationStatus:
 class TableMigrationOutcome:
     status: TableMigrationStatus
     action: MigrationAction = "none"
-    workflow_id: str | None = None
     error: str | None = None
 
 
@@ -133,8 +128,7 @@ class MigrationOptions:
     team_id: int | None = None
     table_ids: tuple[str, ...] = ()
     live_run: bool = False
-    retry_failed: bool = False
-    # How many copies one run may start or restart. None starts every one it can.
+    # How many tables one run may link. None links every one it can.
     limit: int | None = None
 
 
@@ -153,12 +147,9 @@ class _Evaluation:
     table: DataWarehouseTable
     status: TableMigrationStatus
     plan: _TablePlan | None = None
+    # The live migration schema of the table.
     schema: ExternalDataSchema | None = None
-    # A copy was started, but its run has not written a job yet. Starting it again would race it.
-    awaiting_job: bool = False
-    # The workflow id stored before an earlier start. A new start reuses it, so Temporal refuses a
-    # second run while the first one exists, and a crash after dispatch can't copy the table twice.
-    stored_workflow_id: str | None = None
+    job: ExternalDataJob | None = None
 
 
 def resolve_s3_bucket_region(bucket: str, credential: SelfManagedCredential) -> str | None:
@@ -198,14 +189,6 @@ def _object_storage_sources() -> dict[StorageService, ObjectStorageSource[Any]]:
         for source in SourceRegistry.get_all_sources().values()
         if isinstance(source, ObjectStorageSource)
     }
-
-
-def _marker(options: object) -> dict[str, Any]:
-    if isinstance(options, dict):
-        marker = options.get(MIGRATION_MARKER_KEY)
-        if isinstance(marker, dict):
-            return marker
-    return {}
 
 
 def _credential_of(table: DataWarehouseTable) -> SelfManagedCredential | None:
@@ -292,13 +275,42 @@ class _Planner:
         return self._regions[key]
 
 
-def _select_tables(team_id: int | None, table_ids: Iterable[str]) -> list[DataWarehouseTable]:
-    """Self-managed tables, plus every table the migration has touched, oldest first."""
+def _migration_schemas(team_id: int | None, table_ids: Iterable[str]) -> dict[str, list[ExternalDataSchema]]:
+    """Every schema, deleted or not, that the migration made for a table, by table id, oldest first."""
+    queryset = (
+        ExternalDataSchema.objects.filter(
+            source__connection_metadata__has_key=MIGRATION_MARKER_KEY,
+            sync_type_config__schema_metadata__has_key=SCHEMA_SELF_MANAGED_TABLE_METADATA_KEY,
+        )
+        .select_related("source")
+        .order_by("created_at", "id")
+    )
+    if team_id is not None:
+        queryset = queryset.filter(team_id=team_id)
+    ids = list(table_ids)
+    if ids:
+        queryset = queryset.filter(
+            **{f"sync_type_config__schema_metadata__{SCHEMA_SELF_MANAGED_TABLE_METADATA_KEY}__table_id__in": ids}
+        )
+    by_table: dict[str, list[ExternalDataSchema]] = defaultdict(list)
+    for schema in queryset:
+        ref = self_managed_table_ref(schema)
+        if ref is not None:
+            by_table[ref.table_id].append(schema)
+    return by_table
+
+
+def _is_live(schema: ExternalDataSchema) -> bool:
+    return not schema.deleted and not schema.source.deleted
+
+
+def _select_tables(
+    team_id: int | None, table_ids: Iterable[str], migration_schemas: Mapping[str, list[ExternalDataSchema]]
+) -> list[DataWarehouseTable]:
+    """Self-managed tables, plus every table the migration made a schema for, oldest first."""
     queryset = (
         DataWarehouseTable.raw_objects.exclude(deleted=True)
-        .filter(
-            Q(external_data_source__isnull=True, credential__isnull=False) | Q(options__has_key=MIGRATION_MARKER_KEY)
-        )
+        .filter(Q(external_data_source__isnull=True, credential__isnull=False) | Q(id__in=list(migration_schemas)))
         .select_related("credential", "team")
         .order_by("created_at", "id")
     )
@@ -308,18 +320,6 @@ def _select_tables(team_id: int | None, table_ids: Iterable[str]) -> list[DataWa
     if ids:
         queryset = queryset.filter(id__in=ids)
     return list(queryset)
-
-
-def _migration_schemas(tables: list[DataWarehouseTable]) -> dict[str, ExternalDataSchema]:
-    schemas = (
-        ExternalDataSchema.objects.filter(table_id__in=[table.id for table in tables])
-        .exclude(deleted=True)
-        .exclude(source__deleted=True)
-        .filter(source__connection_metadata__has_key=MIGRATION_MARKER_KEY)
-        .select_related("source")
-        .order_by("created_at")
-    )
-    return {str(schema.table_id): schema for schema in schemas}
 
 
 def _latest_jobs(schemas: Iterable[ExternalDataSchema]) -> dict[str, ExternalDataJob]:
@@ -333,59 +333,55 @@ def _latest_jobs(schemas: Iterable[ExternalDataSchema]) -> dict[str, ExternalDat
     return latest
 
 
+def _awaiting_reason(table: DataWarehouseTable, schema: ExternalDataSchema, job: ExternalDataJob | None) -> str:
+    ref = self_managed_table_ref(schema)
+    if schema.table_id is not None:
+        return "the table changed after the migration, so its schema syncs a separate table"
+    if ref is None or (table.url_pattern, table.format) != (ref.url_pattern, ref.format):
+        return "the table changed after the migration, so a sync makes a separate table"
+    if job is None:
+        return "syncing is on; waiting for the first sync" if schema.should_sync else "syncing is off"
+    if job.status == ExternalDataJobStatus.RUNNING:
+        return "the first sync is running"
+    detail = job.latest_error or f"the last sync ended with status {job.status}"
+    return f"{detail}; the table still reads its own bucket"
+
+
 def _evaluate(
     table: DataWarehouseTable,
-    schema: ExternalDataSchema | None,
-    job: ExternalDataJob | None,
+    schemas: list[ExternalDataSchema],
+    jobs: Mapping[str, ExternalDataJob],
     planner: _Planner,
 ) -> _Evaluation:
-    marker = _marker(table.options)
+    live = next((schema for schema in schemas if _is_live(schema)), None)
+    job = jobs.get(str(live.id)) if live is not None else None
 
     def status(state: TableMigrationState, reason: str | None = None) -> TableMigrationStatus:
+        named = live or (schemas[-1] if schemas else None)
         return TableMigrationStatus(
             table_id=str(table.id),
             team_id=table.team_id,
             name=table.name,
             state=state,
             reason=reason,
-            source_id=str(schema.source_id) if schema is not None else marker.get("source_id"),
-            schema_id=str(schema.id) if schema is not None else marker.get("schema_id"),
+            source_id=str(named.source_id) if named is not None else None,
+            schema_id=str(named.id) if named is not None else None,
         )
 
     if table.external_data_source_id is not None:
-        return _Evaluation(table=table, status=status(TableMigrationState.MIGRATED), schema=schema)
-    if marker.get("state") == TableMigrationState.ABANDONED:
-        return _Evaluation(table=table, status=status(TableMigrationState.ABANDONED, marker.get("reason")))
+        return _Evaluation(table=table, status=status(TableMigrationState.MIGRATED), schema=live, job=job)
+    if live is not None:
+        reason = _awaiting_reason(table, live, job)
+        return _Evaluation(table=table, status=status(TableMigrationState.AWAITING_SYNC, reason), schema=live, job=job)
+    if schemas:
+        refs = [ref for ref in (self_managed_table_ref(schema) for schema in schemas) if ref is not None]
+        reason = next((ref.abandon_reason for ref in reversed(refs) if ref.abandon_reason), _DELETED_REASON)
+        return _Evaluation(table=table, status=status(TableMigrationState.ABANDONED, reason))
 
     planned = planner.plan(table)
-    plan = planned if isinstance(planned, _TablePlan) else None
-    if schema is None or job is None:
-        if plan is None:
-            return _Evaluation(table=table, status=status(TableMigrationState.SKIPPED, str(planned)), schema=schema)
-        stored_workflow_id = marker.get("workflow_id") if schema is not None else None
-        dispatching = bool(stored_workflow_id) and marker.get("state") == _DISPATCHING
-        awaiting_job = bool(stored_workflow_id) and not dispatching
-        if dispatching:
-            reason = "a start was not confirmed; the next run starts it with the same workflow id"
-        else:
-            reason = "waiting for the copy to start" if awaiting_job else "not started"
-        return _Evaluation(
-            table=table,
-            status=status(TableMigrationState.PENDING, reason),
-            plan=plan,
-            schema=schema,
-            awaiting_job=awaiting_job,
-            stored_workflow_id=stored_workflow_id if isinstance(stored_workflow_id, str) else None,
-        )
-    if job.status == ExternalDataJobStatus.RUNNING:
-        return _Evaluation(table=table, status=status(TableMigrationState.RUNNING), plan=plan, schema=schema)
-    if job.status == ExternalDataJobStatus.COMPLETED:
-        reason = "the copy finished, but the table still reads its own bucket"
-    else:
-        reason = job.latest_error or f"the copy ended with status {job.status}"
-    if plan is None:
-        reason = f"{reason}; it can't be retried because {planned}"
-    return _Evaluation(table=table, status=status(TableMigrationState.FAILED, reason), plan=plan, schema=schema)
+    if isinstance(planned, _TablePlan):
+        return _Evaluation(table=table, status=status(TableMigrationState.PENDING, "not linked yet"), plan=planned)
+    return _Evaluation(table=table, status=status(TableMigrationState.SKIPPED, planned))
 
 
 def evaluate_tables(
@@ -397,30 +393,11 @@ def evaluate_tables(
 
 
 def _evaluate_all(team_id: int | None, table_ids: Iterable[str], planner: _Planner) -> list[_Evaluation]:
-    tables = _select_tables(team_id, table_ids)
-    schemas = _migration_schemas(tables)
-    jobs = _latest_jobs(schemas.values())
-    evaluations: list[_Evaluation] = []
-    for table in tables:
-        schema = schemas.get(str(table.id))
-        job = jobs.get(str(schema.id)) if schema is not None else None
-        evaluations.append(_evaluate(table, schema, job, planner))
-    return evaluations
-
-
-def _update_table_marker(table: DataWarehouseTable, **changes: Any) -> None:
-    """Merge into the table's migration marker under a row lock.
-
-    The import pipeline writes `options` when it adopts the table, so the marker is merged into
-    the stored value rather than written from the copy loaded at the start of the run.
-    """
-    with transaction.atomic():
-        locked = DataWarehouseTable.raw_objects.select_for_update().get(pk=table.pk)
-        options = dict(locked.options or {})
-        options[MIGRATION_MARKER_KEY] = {**_marker(options), **changes}
-        locked.options = options
-        locked.save(update_fields=["options"])
-    table.options = options
+    ids = list(table_ids)
+    schemas = _migration_schemas(team_id, ids)
+    tables = _select_tables(team_id, ids, schemas)
+    jobs = _latest_jobs(schema for table_schemas in schemas.values() for schema in table_schemas if _is_live(schema))
+    return [_evaluate(table, schemas.get(str(table.id), []), jobs, planner) for table in tables]
 
 
 def _find_or_create_source(table: DataWarehouseTable, plan: _TablePlan) -> ExternalDataSource:
@@ -438,7 +415,9 @@ def _find_or_create_source(table: DataWarehouseTable, plan: _TablePlan) -> Exter
         .order_by("created_at")
         .first()
     )
-    source = existing or ExternalDataSource.objects.create(
+    if existing is not None:
+        return existing
+    source = ExternalDataSource.objects.create(
         source_id=str(uuid.uuid4()),
         connection_id=str(uuid.uuid4()),
         destination_id=str(uuid.uuid4()),
@@ -456,18 +435,9 @@ def _find_or_create_source(table: DataWarehouseTable, plan: _TablePlan) -> Exter
             }
         },
     )
-    if existing is not None:
-        return existing
     ExternalDataSourceDestination.objects.for_team(table.team_id).create(
         team_id=table.team_id, source_id=source.pk, destination=get_or_create_warehouse_destination(table.team_id)
     )
-    # A source's first week of syncs is free (`FREE_HISTORICAL_WINDOW`). Dating a new source to the
-    # table it is made for keeps the user's own syncs of long-standing tables billed as usual. Tables
-    # are planned oldest first, so that is the oldest table of the run. An existing source keeps its
-    # date, because moving it would change which of its past syncs fall in the free window.
-    if table.created_at < source.created_at:
-        ExternalDataSource.objects.filter(pk=source.pk).update(created_at=table.created_at)
-        source.created_at = table.created_at
     return source
 
 
@@ -485,16 +455,12 @@ def _ensure_schema(table: DataWarehouseTable, plan: _TablePlan) -> ExternalDataS
     """
     with transaction.atomic():
         DataWarehouseCredential.objects.select_for_update().get(team_id=table.team_id, pk=_credential_id(table))
-        existing = (
-            ExternalDataSchema.objects.filter(team_id=table.team_id, table_id=table.id)
-            .exclude(deleted=True)
-            .filter(source__connection_metadata__has_key=MIGRATION_MARKER_KEY)
-            .exclude(source__deleted=True)
-            .select_related("source")
-            .first()
-        )
-        if existing is not None:
-            return existing
+        schemas = _migration_schemas(table.team_id, [str(table.id)]).get(str(table.id), [])
+        live = next((schema for schema in schemas if _is_live(schema)), None)
+        if live is not None:
+            return live
+        if schemas:
+            raise UnmappableTableError("the table's migration was abandoned")
         source = _find_or_create_source(table, plan)
         if (
             ExternalDataSchema.objects.filter(team_id=table.team_id, source_id=source.pk, name=table.name)
@@ -502,137 +468,94 @@ def _ensure_schema(table: DataWarehouseTable, plan: _TablePlan) -> ExternalDataS
             .exists()
         ):
             raise UnmappableTableError(f"another table in this bucket already uses the name '{table.name}'")
-        schema = ExternalDataSchema.objects.create(
+        ref = SelfManagedTableRef(table_id=str(table.id), url_pattern=table.url_pattern, format=table.format)
+        return ExternalDataSchema.objects.create(
             name=table.name,
             team_id=table.team_id,
             source=source,
-            table=table,
             should_sync=False,
             sync_type=ExternalDataSchema.SyncType.FULL_REFRESH,
             sync_type_config={
-                "schema_metadata": {**plan.definition.schema_metadata(), SCHEMA_PINNED_METADATA_KEY: True}
+                "schema_metadata": {
+                    **plan.definition.schema_metadata(),
+                    SCHEMA_PINNED_METADATA_KEY: True,
+                    SCHEMA_SELF_MANAGED_TABLE_METADATA_KEY: ref.to_metadata(),
+                }
             },
         )
-    _update_table_marker(table, source_id=str(source.pk), schema_id=str(schema.pk), state="planned")
-    return schema
-
-
-class _CopyAlreadyStartedError(Exception):
-    """Temporal already holds a run with the stored workflow id, so this start added none."""
-
-
-def _new_workflow_id(schema: ExternalDataSchema) -> str:
-    return f"{schema.id}-{WORKFLOW_ID_PREFIX}-{uuid.uuid4().hex[:12]}"
-
-
-def _start_copy(
-    client: Client, table: DataWarehouseTable, schema: ExternalDataSchema, stored_workflow_id: str | None
-) -> str:
-    # Temporal accepted this id before, so a run with it exists or existed.
-    confirmed = stored_workflow_id is not None and _marker(table.options).get("state") == "triggered"
-    workflow_id = stored_workflow_id or _new_workflow_id(schema)
-    if not confirmed:
-        # Stored before the start, so a command that stops between the start and the next write
-        # still knows the id, and its next start can't add a second copy.
-        _update_table_marker(table, state=_DISPATCHING, workflow_id=workflow_id, triggered_at=None)
-    # The schedule is created paused, because a run fired by the schedule is billable. The ad hoc
-    # run then sees a paused schedule and leaves it paused when it finishes.
-    sync_external_data_job_workflow(schema, create=True, should_sync=False, trigger_immediately=False)
-    try:
-        trigger_ad_hoc_sync(
-            client,
-            schema,
-            billable=False,
-            reset_pipeline=False,
-            workflow_id_prefix=WORKFLOW_ID_PREFIX,
-            workflow_id=workflow_id,
-        )
-    except WorkflowStartError as e:
-        if not isinstance(e.__cause__, WorkflowAlreadyStartedError):
-            raise
-        if confirmed:
-            raise _CopyAlreadyStartedError(
-                f"the workflow {workflow_id} is still running or already ended without a job; check it in Temporal"
-            ) from e
-    _update_table_marker(table, state="triggered", triggered_at=timezone.now().isoformat())
-    return workflow_id
 
 
 def migrate_self_managed_tables(
-    options: MigrationOptions,
-    client: Client | None = None,
-    resolve_region: BucketRegionResolver = resolve_s3_bucket_region,
-    pause: Callable[[], None] | None = None,
+    options: MigrationOptions, resolve_region: BucketRegionResolver = resolve_s3_bucket_region
 ) -> list[TableMigrationOutcome]:
-    """Plan, and on a live run start, the copy of every selected self-managed table.
+    """Plan, and on a live run create, the source and the turned-off schema of every selected table.
 
-    A dry run reads the same rows and reports the same decisions, but writes nothing. `pause` runs
-    between two starts so a large batch does not reach the workers at once.
+    Nothing syncs and no table changes. A dry run reads the same rows and reports the same
+    decisions, but writes nothing.
     """
-    if options.live_run and client is None:
-        raise ValueError("A live run needs a Temporal client")
     planner = _Planner(resolve_region)
     outcomes: list[TableMigrationOutcome] = []
-    started = 0
+    linked = 0
     for evaluation in _evaluate_all(options.team_id, options.table_ids, planner):
-        state = evaluation.status.state
-        # A start that never wrote a job counts as failed for a retry, because its run is gone.
-        is_retry = options.retry_failed and (state == TableMigrationState.FAILED or evaluation.awaiting_job)
-        is_start = state == TableMigrationState.PENDING and not evaluation.awaiting_job
-        if evaluation.plan is None or not (is_start or is_retry):
+        if evaluation.plan is None or evaluation.status.state != TableMigrationState.PENDING:
             outcomes.append(TableMigrationOutcome(status=evaluation.status))
             continue
-        if options.limit is not None and started >= options.limit:
+        if options.limit is not None and linked >= options.limit:
             outcomes.append(TableMigrationOutcome(status=evaluation.status, action="limit_reached"))
             continue
+        linked += 1
         if not options.live_run:
-            started += 1
-            outcomes.append(
-                TableMigrationOutcome(status=evaluation.status, action="would_start" if is_start else "would_retry")
-            )
+            outcomes.append(TableMigrationOutcome(status=evaluation.status, action="would_link"))
             continue
-        if started and pause is not None:
-            pause()
-        started += 1
-        outcomes.append(_start(client, evaluation, is_retry))
+        outcomes.append(_link(evaluation.table, evaluation.plan, evaluation.status))
     return outcomes
 
 
-def _start(client: Client | None, evaluation: _Evaluation, is_retry: bool) -> TableMigrationOutcome:
-    assert client is not None and evaluation.plan is not None
-    table = evaluation.table
-    # A retry after a finished job needs a new workflow id: Temporal refuses the id of a run that ended.
-    stored_workflow_id = (
-        evaluation.stored_workflow_id if evaluation.status.state == TableMigrationState.PENDING else None
-    )
+def _link(table: DataWarehouseTable, plan: _TablePlan, status: TableMigrationStatus) -> TableMigrationOutcome:
     try:
-        schema = evaluation.schema or _ensure_schema(table, evaluation.plan)
-        workflow_id = _start_copy(client, table, schema, stored_workflow_id)
-    except (
-        UnmappableTableError,
-        SchedulePauseError,
-        WorkflowStartError,
-        SyncStillRunningError,
-        _CopyAlreadyStartedError,
-    ) as e:
-        logger.warning("Could not start a self-managed table copy", table_id=str(table.id), error=str(e))
-        return TableMigrationOutcome(status=evaluation.status, action="start_failed", error=str(e))
+        schema = _ensure_schema(table, plan)
+    except UnmappableTableError as e:
+        return TableMigrationOutcome(status=status, action="link_failed", error=str(e))
     except Exception as e:
-        # A Temporal or database error on one table must not stop the batch or hide its outcomes.
-        logger.warning("Could not start a self-managed table copy", table_id=str(table.id), exc_info=True)
-        return TableMigrationOutcome(status=evaluation.status, action="start_failed", error=f"{type(e).__name__}: {e}")
+        # A database error on one table must not stop the batch or hide its outcomes.
+        logger.warning("Could not link a self-managed table", table_id=str(table.id), exc_info=True)
+        return TableMigrationOutcome(status=status, action="link_failed", error=f"{type(e).__name__}: {e}")
     logger.info(
-        "Started a self-managed table copy",
+        "Linked a self-managed table to an object storage source",
         table_id=str(table.id),
         team_id=table.team_id,
         schema_id=str(schema.id),
-        workflow_id=workflow_id,
     )
     return TableMigrationOutcome(
-        status=dataclasses.replace(evaluation.status, schema_id=str(schema.id), source_id=str(schema.source_id)),
-        action="retried" if is_retry else "started",
-        workflow_id=workflow_id,
+        status=dataclasses.replace(
+            status,
+            state=TableMigrationState.AWAITING_SYNC,
+            reason="syncing is off",
+            schema_id=str(schema.id),
+            source_id=str(schema.source_id),
+        ),
+        action="linked",
     )
+
+
+def _abandon_refusal(evaluation: _Evaluation) -> str | None:
+    state = evaluation.status.state
+    if state == TableMigrationState.MIGRATED:
+        return "the table is already migrated"
+    if state == TableMigrationState.ABANDONED:
+        return "the table's migration is already abandoned"
+    if state == TableMigrationState.SKIPPED:
+        return f"the table can't be migrated, so there is nothing to abandon ({evaluation.status.reason})"
+    schema = evaluation.schema
+    if schema is None:
+        return None
+    if schema.table_id is not None:
+        return "the table's schema syncs a separate table"
+    if schema.should_sync:
+        return "the user turned syncing on for the table's schema"
+    if evaluation.job is not None and evaluation.job.status == ExternalDataJobStatus.RUNNING:
+        return "the table's first sync is running"
+    return None
 
 
 def abandon_tables(
@@ -640,74 +563,68 @@ def abandon_tables(
     reason: str = DEFAULT_ABANDON_REASON,
     team_id: int | None = None,
     live_run: bool = False,
+    resolve_region: BucketRegionResolver = resolve_s3_bucket_region,
 ) -> list[AbandonOutcome]:
-    """Leave tables self-managed for good, and remove what the migration created for them.
+    """Leave tables self-managed for good, and remove the schema the migration made for them.
 
-    A table's source goes too when the table was the last one it held. A table that is already
-    copied, or whose copy is running, is refused: the first can't be undone here, and the second
-    would adopt the table after the abandon.
+    The schema stays as a deleted row that names the table and the reason, so later runs leave the
+    table alone. A table with no schema yet gets one first, for that record. A table's source goes
+    too when the table was the last one it held. The table itself never changes.
     """
     ids = list(table_ids)
-    tables = {str(table.id): table for table in _select_tables(team_id, ids)}
-    schemas = _migration_schemas(list(tables.values()))
-    jobs = _latest_jobs(schemas.values())
+    evaluations = {
+        evaluation.status.table_id: evaluation for evaluation in _evaluate_all(team_id, ids, _Planner(resolve_region))
+    }
     outcomes: list[AbandonOutcome] = []
     for table_id in ids:
-        table = tables.get(table_id)
-        if table is None:
+        evaluation = evaluations.get(table_id)
+        if evaluation is None:
             outcomes.append(AbandonOutcome(table_id=table_id, action="refused", reason="no such self-managed table"))
             continue
-        schema = schemas.get(table_id)
-        job = jobs.get(str(schema.id)) if schema is not None else None
-        if table.external_data_source_id is not None:
-            outcomes.append(AbandonOutcome(table_id=table_id, action="refused", reason="the table is already migrated"))
-        elif job is not None and job.status == ExternalDataJobStatus.RUNNING:
-            outcomes.append(AbandonOutcome(table_id=table_id, action="refused", reason="the table's copy is running"))
-        elif schema is not None and job is None and _marker(table.options).get("workflow_id"):
-            outcomes.append(
-                AbandonOutcome(
-                    table_id=table_id,
-                    action="refused",
-                    reason="the table's copy was started and has no job yet; wait until --status shows the job",
-                )
-            )
+        refusal = _abandon_refusal(evaluation)
+        if refusal is not None:
+            outcomes.append(AbandonOutcome(table_id=table_id, action="refused", reason=refusal))
         elif not live_run:
             outcomes.append(AbandonOutcome(table_id=table_id, action="would_abandon"))
         else:
-            _abandon(table, schema, reason)
+            try:
+                _abandon(evaluation, reason)
+            except UnmappableTableError as e:
+                outcomes.append(AbandonOutcome(table_id=table_id, action="refused", reason=str(e)))
+                continue
             outcomes.append(AbandonOutcome(table_id=table_id, action="abandoned", reason=reason))
     return outcomes
 
 
-def _abandon(table: DataWarehouseTable, schema: ExternalDataSchema | None, reason: str) -> None:
+def _abandon(evaluation: _Evaluation, reason: str) -> None:
+    table = evaluation.table
     removed_source_id: str | None = None
-    # The marker is written with the deletion, so a failure after it can't leave a table that the
-    # next run reads as pending and copies again.
     with transaction.atomic():
-        if schema is not None:
-            # Unlinked first, so deleting the schema can never reach the customer's table.
-            schema.table = None
-            schema.save(update_fields=["table", "updated_at"])
-            schema.soft_delete()
-            source = schema.source
-            if (
-                not ExternalDataSchema.objects.filter(team_id=table.team_id, source_id=source.pk)
-                .exclude(deleted=True)
-                .exists()
-            ):
-                source.soft_delete()
-                removed_source_id = str(source.pk)
-        _update_table_marker(
-            table,
-            state=TableMigrationState.ABANDONED.value,
-            reason=reason,
-            abandoned_at=timezone.now().isoformat(),
-        )
-    if schema is not None:
+        if evaluation.schema is not None:
+            schema = evaluation.schema
+        else:
+            assert evaluation.plan is not None
+            schema = _ensure_schema(table, evaluation.plan)
+        ref = self_managed_table_ref(schema)
+        assert ref is not None
+        metadata = (schema.sync_type_config or {})["schema_metadata"]
+        metadata[SCHEMA_SELF_MANAGED_TABLE_METADATA_KEY] = dataclasses.replace(ref, abandon_reason=reason).to_metadata()
+        schema.save(update_fields=["sync_type_config", "updated_at"])
+        schema.soft_delete()
+        source = schema.source
+        if (
+            not ExternalDataSchema.objects.filter(team_id=table.team_id, source_id=source.pk)
+            .exclude(deleted=True)
+            .exists()
+        ):
+            source.soft_delete()
+            removed_source_id = str(source.pk)
+    if evaluation.schema is not None:
+        # A schedule exists only when the user turned syncing on before, so it is paused now.
         try:
             delete_external_data_schedule(str(schema.id))
         except Exception:
-            # The schedule is paused and its schema is deleted, so it can't start a copy.
+            # The schema is deleted, so its schedule can't start a sync.
             logger.warning(
                 "Could not delete the schedule of an abandoned migration schema",
                 table_id=str(table.id),

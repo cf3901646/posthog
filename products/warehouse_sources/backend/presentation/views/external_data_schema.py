@@ -2040,9 +2040,8 @@ class ExternalDataSchemaViewset(TeamAndOrgViewSetMixin, viewsets.ModelViewSet):
     def destroy(self, request: Request, *args: Any, **kwargs: Any) -> Response:
         instance: ExternalDataSchema = self.get_object()
 
-        if instance.table and not instance.table.delete_with_schema():
-            # A self-managed table the schema had not imported yet stays, unlinked.
-            instance.table = None
+        if instance.table:
+            instance.table.soft_delete()
         instance.soft_delete()
 
         # CDC teardown, both best-effort: leaving the table in the publication makes the

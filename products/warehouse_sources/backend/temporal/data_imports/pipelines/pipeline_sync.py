@@ -7,7 +7,7 @@ from datetime import date, datetime
 from typing import Any, Optional
 
 from django.db import transaction
-from django.db.models import Prefetch
+from django.db.models import Prefetch, Q
 from django.utils import timezone
 
 import dlt
@@ -30,6 +30,7 @@ from products.warehouse_sources.backend.models.external_data_job import External
 from products.warehouse_sources.backend.models.external_data_schema import (
     ExternalDataSchema,
     mark_initial_sync_complete,
+    self_managed_table_ref,
     update_sync_type_config_keys,
 )
 from products.warehouse_sources.backend.models.external_data_source import ExternalDataSource
@@ -322,6 +323,29 @@ def find_orphan_table(schema: ExternalDataSchema, source: ExternalDataSource) ->
     ).first()
 
 
+def find_replaced_self_managed_table(
+    schema: ExternalDataSchema, source: ExternalDataSource
+) -> DataWarehouseTable | None:
+    """The self-managed table the schema's first sync replaces, when it still reads the files the schema copies.
+
+    A table the user edited after the migration reads other files now, so the sync must not replace it,
+    and gets a table of its own. A table this source already took over but that no schema owns is
+    the result of a publish that stopped before the link, so the next publish finishes it.
+    """
+    ref = self_managed_table_ref(schema)
+    if ref is None:
+        return None
+    return (
+        DataWarehouseTable.objects.filter(team_id=schema.team_id, id=ref.table_id, deleted=False)
+        .filter(externaldataschema__isnull=True)
+        .filter(
+            Q(external_data_source__isnull=True, url_pattern=ref.url_pattern, format=ref.format)
+            | Q(external_data_source_id=source.id)
+        )
+        .first()
+    )
+
+
 def relink_orphan_table(
     schema: ExternalDataSchema, source: ExternalDataSource, logger: FilteringBoundLogger
 ) -> DataWarehouseTable | None:
@@ -436,6 +460,9 @@ async def validate_schema_and_update_table(
                 if table_created is not None:
                     logger.debug(f"Found existing table {table_created.id} - reusing it for schema {_schema_id}")
 
+            if table_created is None:
+                table_created = find_replaced_self_managed_table(external_data_schema, job.pipeline)
+
             # A reported row_count of 0 does not always mean the run wrote nothing: the v3 consumer
             # can read 0 on a redelivered final batch, and a resumed run counts only its own attempt.
             # A publish step with nothing to make queryable is what an empty first sync looks like.
@@ -466,15 +493,10 @@ async def validate_schema_and_update_table(
                 # new_url_pattern above is derived from the job's own destination folder, not from
                 # request input, so this sync is a trusted writer of a credential-less table's URL.
                 update_fields = ["format", "url_pattern", "queryable_folder", "row_count"]
-                if table.is_self_managed:
-                    # A self-managed table linked to this schema reads its own bucket until now.
+                if table.external_data_source_id is None:
+                    # A self-managed table this schema replaces reads its own bucket until now.
                     update_fields.extend(table.adopt_into_source(job.pipeline))
                     logger.info(f"Adopted self-managed table {table.id} into source {job.pipeline.id}")
-                if job.billable and table.is_free_migration_copy:
-                    # The user turned syncing on, so the table's storage bills like any synced table.
-                    update_fields.extend(
-                        field for field in table.end_free_migration_copy() if field not in update_fields
-                    )
                 if live_size_mib is not None:
                     table.size_in_s3_mib = live_size_mib
                     update_fields.append("size_in_s3_mib")
@@ -667,15 +689,6 @@ async def register_cdc_companion_table(
                 # new_url_pattern above is derived from the job's own destination folder, not from
                 # request input, so this sync is a trusted writer of a credential-less table's URL.
                 update_fields = ["format", "url_pattern", "queryable_folder", "row_count"]
-                if table.is_self_managed:
-                    # A self-managed table linked to this schema reads its own bucket until now.
-                    update_fields.extend(table.adopt_into_source(job.pipeline))
-                    logger.info(f"Adopted self-managed table {table.id} into source {job.pipeline.id}")
-                if job.billable and table.is_free_migration_copy:
-                    # The user turned syncing on, so the table's storage bills like any synced table.
-                    update_fields.extend(
-                        field for field in table.end_free_migration_copy() if field not in update_fields
-                    )
                 if live_size_mib is not None:
                     table.size_in_s3_mib = live_size_mib
                     update_fields.append("size_in_s3_mib")
