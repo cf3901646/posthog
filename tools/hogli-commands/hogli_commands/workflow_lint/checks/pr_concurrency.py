@@ -21,12 +21,6 @@ push arm per-SHA when the workflow publishes on push. Its opt-out is the
 inline marker rather than ``SKIP``, so an exemption for one line sits beside
 that line.
 
-A push-triggered workflow that publishes an image or a deploy, and picks what
-to build from each push's own diff, must key its push arm per-SHA even
-without cancellation. GitHub keeps one pending run per group, so a newer push
-replaces the pending run, and the replacing run reads only its own diff. A
-change that lived only in the replaced push never builds or deploys.
-
 Some workflows are intentionally exempt from *requiring* a block (telemetry /
 shadow measurement, schedule-dominant jobs). Those are listed in ``SKIP``
 below with a one-line reason each.
@@ -39,14 +33,10 @@ from pathlib import Path
 
 from ..check import CheckResult, Issue, WorkflowCheck
 from ..model import Workflow
-from .reusable_secret_passthrough import _callee_name
 
 BAD_FALLBACK = re.compile(r"head_ref\s*\|\|\s*github\.run_id")
 PER_SHA_PUSH_ARM = re.compile(r"event_name\s*==\s*['\"]push['\"]\s*&&\s*github\.sha")
 MASTER_CANCEL_MARKER = "hogli-lint: allow-master-cancel"
-SHARED_PUSH_GROUP_MARKER = "hogli-lint: allow-shared-push-group"
-PUSH_DIFF_SELECTORS = ("paths-filter", "github.event.before")
-PUBLISHERS = ("commit_state_update", "build-push-action")
 
 
 class PrConcurrencyCheck(WorkflowCheck):
@@ -87,16 +77,11 @@ class PrConcurrencyCheck(WorkflowCheck):
             "Gate it on the event as above, or key the push arm per-SHA when the workflow publishes:\n"
             "    group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.head_ref || github.ref }}\n"
             f"Where latest-wins is right (a cache warmer), say so with `# {MASTER_CANCEL_MARKER} -- <reason>`.\n"
-            "SKIP does not exempt this rule; the marker is its opt-out.\n"
-            "\n"
-            "Shared push group on a workflow that publishes what its push diff selects: key the push arm\n"
-            "per-SHA as above, so a newer push cannot replace a pending run and drop its changes.\n"
-            f"Where something else rebuilds the dropped change, say so with `# {SHARED_PUSH_GROUP_MARKER} -- <reason>`."
+            "SKIP does not exempt this rule; the marker is its opt-out."
         )
 
     def run(self, workflows: list[Workflow]) -> CheckResult:
         result = CheckResult()
-        by_name = {wf.path.name: wf for wf in workflows}
         for wf in workflows:
             group_expr = _concurrency_group_expr(wf.concurrency)
             if _cancels_master_pushes(wf, group_expr):
@@ -107,19 +92,6 @@ class PrConcurrencyCheck(WorkflowCheck):
                             "`cancel-in-progress: true` on a push-triggered workflow cancels master runs; "
                             "gate it with `${{ github.event_name == 'pull_request' }}`, or key the push arm "
                             "per-SHA when the workflow publishes on push"
-                        ),
-                        file=str(wf.path),
-                    )
-                )
-
-            if _drops_pending_push_builds(wf, group_expr, by_name):
-                result.issues.append(
-                    Issue(
-                        workflow=wf.path.name,
-                        message=(
-                            "publishes what each push's diff selects, but master pushes share one concurrency "
-                            "group; a newer push replaces the pending run and its changes never build. Key the "
-                            "push arm per-SHA"
                         ),
                         file=str(wf.path),
                     )
@@ -166,24 +138,7 @@ def _cancels_master_pushes(wf: Workflow, group_expr: str) -> bool:
         return False
     if _keys_pushes_per_sha(group_expr):
         return False
-    return not _has_marker(wf.path, MASTER_CANCEL_MARKER)
-
-
-def _drops_pending_push_builds(wf: Workflow, group_expr: str, by_name: dict[str, Workflow]) -> bool:
-    if not group_expr or not wf.is_push_triggered or _keys_pushes_per_sha(group_expr):
-        return False
-    # The parsed workflow holds no comments, so a comment that names a selector or publisher does not match.
-    if not any(selector in str(wf.raw) for selector in PUSH_DIFF_SELECTORS):
-        return False
-    callees = (by_name.get(_callee_name(job.uses) or "") for job in wf.jobs if job.uses)
-    if not _publishes(wf) and not any(callee and _publishes(callee) for callee in callees):
-        return False
-    return not _has_marker(wf.path, SHARED_PUSH_GROUP_MARKER)
-
-
-def _publishes(wf: Workflow) -> bool:
-    source = str(wf.raw)
-    return any(publisher in source for publisher in PUBLISHERS)
+    return not _has_master_cancel_marker(wf.path)
 
 
 def _keys_pushes_per_sha(group_expr: str) -> bool:
@@ -200,7 +155,7 @@ def _keys_pushes_per_sha(group_expr: str) -> bool:
     return "github.sha" in group_expr
 
 
-def _has_marker(path: Path, marker: str) -> bool:
+def _has_master_cancel_marker(path: Path) -> bool:
     """Report an explicit, reasoned bypass comment anywhere in the file.
 
     PyYAML drops comments, so the parsed model decides the violation and this
@@ -208,9 +163,9 @@ def _has_marker(path: Path, marker: str) -> bool:
     """
     with open(path, encoding="utf-8") as f:
         for line in f:
-            if marker not in line:
+            if MASTER_CANCEL_MARKER not in line:
                 continue
-            reason = line.partition(marker)[2].strip()
+            reason = line.partition(MASTER_CANCEL_MARKER)[2].strip()
             if reason.startswith("--") and reason[2:].strip():
                 return True
     return False
