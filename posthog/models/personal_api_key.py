@@ -46,6 +46,7 @@ class PersonalAPIKey(ModelActivityMixin, models.Model):
     created_at = models.DateTimeField(default=timezone.now)
     last_used_at = models.DateTimeField(null=True, blank=True)
     last_rolled_at = models.DateTimeField(null=True, blank=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
     scopes: ArrayField = ArrayField(models.CharField(max_length=100), default=list)
     scoped_teams: ArrayField = ArrayField(models.IntegerField(), null=True, blank=True)
     scoped_organizations: ArrayField = ArrayField(models.CharField(max_length=100), null=True, blank=True)
@@ -60,6 +61,10 @@ class PersonalAPIKey(ModelActivityMixin, models.Model):
         null=True,
         blank=True,
     )
+
+    @property
+    def is_expired(self) -> bool:
+        return self.expires_at is not None and self.expires_at <= timezone.now()
 
 
 def find_personal_api_key(token: str) -> tuple[PersonalAPIKey, str] | None:

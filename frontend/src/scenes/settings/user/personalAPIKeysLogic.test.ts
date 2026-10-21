@@ -3,6 +3,7 @@ import { MOCK_DEFAULT_USER } from 'lib/api.mock'
 import { expectLogic } from 'kea-test-utils'
 
 import { FEATURE_FLAGS } from 'lib/constants'
+import { dayjs } from 'lib/dayjs'
 import { featureFlagLogic } from 'lib/logic/featureFlagLogic'
 import { userLogic } from 'scenes/userLogic'
 
@@ -10,7 +11,7 @@ import { themeLogic } from '~/layout/navigation-3000/themeLogic'
 import { useMocks } from '~/mocks/jest'
 import { initKeaTests } from '~/test/init'
 
-import { personalAPIKeysLogic } from './personalAPIKeysLogic'
+import { expiresAtForOption, personalAPIKeysLogic } from './personalAPIKeysLogic'
 
 describe('personalAPIKeysLogic', () => {
     let logic: ReturnType<typeof personalAPIKeysLogic.build>
@@ -155,5 +156,15 @@ describe('personalAPIKeysLogic', () => {
 
         expect(logic.values.editingKey.scopes).toContain('survey:write')
         expect(logic.values.editingKey.scopes).not.toContain('feature_flag:write')
+    })
+
+    it.each([
+        ['keep', null, undefined],
+        ['never', null, null],
+        ['30', null, dayjs('2026-01-31T10:00:00Z').toISOString()],
+        ['custom', '2026-03-05T00:00:00Z', dayjs('2026-03-05T00:00:00Z').endOf('day').toISOString()],
+        ['custom', null, undefined],
+    ] as const)('expiration %s with custom date %s sends expires_at %s', (expiration, customDate, expected) => {
+        expect(expiresAtForOption(expiration, customDate, dayjs('2026-01-01T10:00:00Z'))).toEqual(expected)
     })
 })
