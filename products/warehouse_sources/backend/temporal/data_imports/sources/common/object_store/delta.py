@@ -103,6 +103,7 @@ class DeltaRead:
         fragments = list(self.added_files) if self.added_files is not None else None
         if fragments is not None and not fragments:
             return
+        scans: list[tuple[str | None, list[ds.FileFragment] | None]]
         if with_file_names:
             # One scan per file, because a scan does not say which file a batch came from.
             scans = [(fragment.path, [fragment]) for fragment in fragments or self.dataset.get_fragments()]
@@ -132,7 +133,9 @@ class DeltaRead:
         dataset: ds.Dataset = self.dataset
         if fragments is not None:
             # Built from the snapshot's own fragments, so partition columns come back as in a full read.
-            dataset = ds.FileSystemDataset(fragments, self.dataset.schema, self.dataset.format, self.dataset.filesystem)
+            dataset = ds.FileSystemDataset(
+                cast(list[ds.Fragment], fragments), self.dataset.schema, self.dataset.format, self.dataset.filesystem
+            )
         return dataset.scanner(batch_size=batch_rows, batch_readahead=1, fragment_readahead=1, use_threads=False)
 
     def _tagged(self, table: pa.Table, with_version: bool, with_file_names: bool, file_name: str | None) -> pa.Table:
