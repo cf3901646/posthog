@@ -2,7 +2,7 @@ import { HogFlowAction } from '~/cdp/schema/hogflow'
 import { RedisV2 } from '~/common/redis/redis-v2'
 import { logger } from '~/common/utils/logger'
 
-import { CyclotronJobInvocationHogFunction } from '../../types'
+import { CyclotronJobInvocationHogFunction, MessageOptOutRecord } from '../../types'
 import { workflowStepDispatchKeyFromInvocation } from '../../utils/workflow-step-dispatch-key'
 import { RecipientsManagerService } from '../managers/recipients-manager.service'
 import { TeamWorkflowsConfigService } from '../managers/team-workflows-config.service'
@@ -96,7 +96,8 @@ export class RecipientPreferencesService {
 
     public async shouldSkipAction(
         invocation: CyclotronJobInvocationHogFunction,
-        action: HogFlowAction
+        action: HogFlowAction,
+        runOptOuts: MessageOptOutRecord[] = []
     ): Promise<RecipientSkipReason | null> {
         if (!this.isSubjectToRecipientPreferences(action)) {
             return null
@@ -115,7 +116,7 @@ export class RecipientPreferencesService {
             return null
         }
 
-        return (await this.isRecipientOptedOutOfAction(invocation, action)) ? 'opted_out' : null
+        return (await this.isRecipientOptedOutOfAction(invocation, action, runOptOuts)) ? 'opted_out' : null
     }
 
     private async isRecipientSuppressed(
@@ -159,7 +160,8 @@ export class RecipientPreferencesService {
 
     private async isRecipientOptedOutOfAction(
         invocation: CyclotronJobInvocationHogFunction,
-        action: MessageAction
+        action: MessageAction,
+        runOptOuts: MessageOptOutRecord[]
     ): Promise<boolean> {
         let identifier
 
@@ -186,6 +188,19 @@ export class RecipientPreferencesService {
             )
         }
 
+        // Grab the recipient preferences for the action category
+        const categoryId = action.config.message_category_id || '$all'
+        const trimmedIdentifier = String(identifier).trim()
+        if (
+            runOptOuts.some(
+                (optOut) =>
+                    optOut.identifier === trimmedIdentifier &&
+                    (optOut.categoryId === categoryId || optOut.categoryId === '$all')
+            )
+        ) {
+            return true
+        }
+
         try {
             const recipient = await this.recipientsManager.get({
                 teamId: invocation.teamId,
@@ -200,9 +215,6 @@ export class RecipientPreferencesService {
                  */
                 return false
             }
-
-            // Grab the recipient preferences for the action category
-            const categoryId = action.config.message_category_id || '$all'
 
             const messageCategoryPreference = this.recipientsManager.getPreference(recipient, categoryId)
             const allMarketingPreferences = this.recipientsManager.getAllMarketingMessagingPreference(recipient)
